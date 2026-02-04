@@ -1,0 +1,37 @@
+# 環境變數（包含 API Key）
+.env
+*.env
+!.env.example
+
+# macOS
+.DS_Store
+._*
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.Trashes
+
+# 暫存檔
+*.wav
+*.mp3
+*.m4a
+/tmp/
+
+# 編輯器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# Node（如果未來加入）
+node_modules/
+
+# 本地開發用腳本
+sh/
+scripts/
+
+# 日誌
+*.log
