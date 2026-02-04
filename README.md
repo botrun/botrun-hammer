@@ -123,9 +123,10 @@ curl -fsSL https://raw.githubusercontent.com/botrun/botrun-hammer/main/install.s
 
 API Key 可能沒有正確設定。手動設定方式：
 1. 開啟「終端機」
-2. 輸入 `nano ~/.botrun-hammer/.env` 按 Enter
-3. 輸入 `NCHC_GENAI_API_KEY=你的API_KEY`（把「你的API_KEY」換成真正的 Key）
-4. 按 `Control + O` 儲存，按 `Control + X` 離開
+2. 輸入 `vi ~/.botrun-hammer/.env` 按 Enter
+3. 按 `i` 進入編輯模式
+4. 輸入 `NCHC_GENAI_API_KEY=你的API_KEY`（把「你的API_KEY」換成真正的 Key）
+5. 按 `ESC`，然後輸入 `:wq` 按 Enter 儲存離開
 
 ### Q: 轉譯結果是簡體字？
 
