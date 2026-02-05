@@ -166,7 +166,13 @@ echo -e "${BOLD}🔑 設定 API Key${NC}"
 
 if [[ -f "$ENV_FILE" ]] && grep -q "NCHC_GENAI_API_KEY" "$ENV_FILE"; then
     echo -e "${GREEN}✅ API Key 已設定${NC}"
-else
+elif [[ -n "$NCHC_GENAI_API_KEY" ]]; then
+    # 從環境變數讀取
+    echo "NCHC_GENAI_API_KEY=$NCHC_GENAI_API_KEY" > "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
+    echo -e "${GREEN}✅ API Key 已從環境變數設定${NC}"
+elif [[ -t 0 ]]; then
+    # 互動模式：提示輸入
     echo ""
     echo "請輸入你的 NCHC GenAI API Key"
     echo -e "${CYAN}（申請網址：https://portal.genai.nchc.org.tw/）${NC}"
@@ -182,6 +188,12 @@ else
         echo "NCHC_GENAI_API_KEY=你的API_KEY" > "$ENV_FILE"
         chmod 600 "$ENV_FILE"
     fi
+else
+    # 非互動模式：跳過輸入
+    echo -e "${YELLOW}⚠️ 非互動模式，跳過 API Key 設定${NC}"
+    echo -e "${YELLOW}   請稍後執行: vi $ENV_FILE${NC}"
+    echo "NCHC_GENAI_API_KEY=你的API_KEY" > "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
 fi
 
 # ========================================
@@ -191,14 +203,14 @@ fi
 echo ""
 echo "🚀 啟動 Hammerspoon..."
 
-# 如果已經在執行，重新載入設定
+# 如果已經在執行，重新載入設定（加 timeout 避免卡住）
 if pgrep -x "Hammerspoon" > /dev/null; then
     # 嘗試用 hs CLI 重新載入
     if command -v hs &> /dev/null; then
-        hs -c "hs.reload()" 2>/dev/null || true
+        timeout 5 hs -c "hs.reload()" 2>/dev/null || true
     else
         # 用 AppleScript 重新載入
-        osascript -e 'tell application "Hammerspoon" to reload config' 2>/dev/null || true
+        timeout 5 osascript -e 'tell application "Hammerspoon" to reload config' 2>/dev/null || true
     fi
 else
     open -a Hammerspoon

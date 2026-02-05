@@ -38,22 +38,27 @@ fi
 
 # 詢問是否移除設定目錄
 echo ""
-read -p "是否移除設定目錄 $BOTRUN_DIR？(y/N) " -n 1 -r
-echo ""
-
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    rm -rf "$BOTRUN_DIR"
-    echo -e "${GREEN}✅ 已移除設定目錄${NC}"
+if [[ -t 0 ]]; then
+    # 互動模式：詢問
+    read -p "是否移除設定目錄 $BOTRUN_DIR？(y/N) " -n 1 -r
+    echo ""
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        rm -rf "$BOTRUN_DIR"
+        echo -e "${GREEN}✅ 已移除設定目錄${NC}"
+    else
+        echo -e "${YELLOW}⚠️ 保留設定目錄（包含 API Key）${NC}"
+    fi
 else
-    echo -e "${YELLOW}⚠️ 保留設定目錄（包含 API Key）${NC}"
+    # 非互動模式：保留設定目錄
+    echo -e "${YELLOW}⚠️ 非互動模式，保留設定目錄（包含 API Key）${NC}"
 fi
 
-# 重新載入 Hammerspoon
+# 重新載入 Hammerspoon（加 timeout 避免卡住）
 if pgrep -x "Hammerspoon" > /dev/null; then
     if command -v hs &> /dev/null; then
-        hs -c "hs.reload()" 2>/dev/null || true
+        timeout 5 hs -c "hs.reload()" 2>/dev/null || true
     else
-        osascript -e 'tell application "Hammerspoon" to reload config' 2>/dev/null || true
+        timeout 5 osascript -e 'tell application "Hammerspoon" to reload config' 2>/dev/null || true
     fi
 fi
 
