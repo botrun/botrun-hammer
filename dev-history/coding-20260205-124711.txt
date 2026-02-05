@@ -1,0 +1,24 @@
+# Botrun Whisper 安裝記錄
+# 時間：$(TZ='Asia/Taipei' date '+%Y-%m-%d %H:%M:%S') (臺灣時間)
+
+## 完成事項
+- 透過 install.sh 安裝所有相依套件
+  - Hammerspoon (v1.1.0)
+  - sox (錄音工具)
+  - jq (JSON 解析)
+  - opencc (簡繁轉換)
+- 部署 botrun-whisper.lua 至 ~/.hammerspoon/
+- 建立 init.lua 設定
+- 寫入 API Key 至 ~/.botrun-hammer/.env
+- 啟動 Hammerspoon
+
+## 地雷 (Mines)
+1. install.sh 在非互動式終端機無法輸入 API Key，需手動寫入 ~/.botrun-hammer/.env
+2. 首次啟動 Hammerspoon 需手動授權「輔助使用」權限，否則快捷鍵無法運作
+3. hs -c 'hs.reload()' 在首次啟動時因 IPC 模組未載入會失敗，需從選單列手動 Reload
+4. 麥克風權限需在第一次錄音時手動允許
+
+## 經驗 (Experience)
+1. Hammerspoon 是 macOS 自動化框架，用 Lua 寫腳本
+2. 安裝流程：Homebrew → Hammerspoon + sox + jq + opencc → Lua 腳本部署 → API Key 設定
+3. 非互動式安裝時可直接寫 .env 檔，跳過 install.sh 的互動式 API Key 輸入
