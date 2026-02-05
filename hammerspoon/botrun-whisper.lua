@@ -1,6 +1,5 @@
 --[[
-  Botrun Whisper - Mac 語音轉文字
-  版本：1.2.4
+  🔨 波特槌 v1.2.7 - Mac 語音轉文字
 
   由 NCHC Whisper API 驅動的語音輸入助手
 
@@ -19,8 +18,6 @@
   - jq (brew install jq)
   - NCHC_GENAI_API_KEY 環境變數
 ]]--
-
-local VERSION = "1.2.4"
 
 -- ========================================
 -- 設定
@@ -199,7 +196,7 @@ local function startRecording()
   local success = state.recordingTask:start()
 
   if success then
-    hs.alert.show("錄音中...\n(F5 停止，ESC 取消)", 2)
+    hs.alert.show("🎙️ 錄音中...\n(F5 停止，ESC 取消)", 2)
     return true
   else
     hs.alert.show("啟動錄音失敗", 2)
@@ -233,7 +230,7 @@ local function cancelRecording()
   -- 刪除暫存檔
   os.remove(config.tempFile)
 
-  hs.alert.show("已取消錄音", 1.5)
+  hs.alert.show("❌ 已取消錄音", 1.5)
 end
 
 -- ========================================
@@ -257,7 +254,7 @@ local function transcribe(callback)
     return
   end
 
-  hs.alert.show("轉錄中...", 1)
+  hs.alert.show("✨ 轉錄中...", 1)
 
   -- 使用 curl 呼叫 API
   local curlCmd = string.format([[
@@ -348,7 +345,7 @@ local function toggleRecording()
     transcribe(function(text, err)
       if text then
         pasteText(text)
-        hs.alert.show("完成！", 1)
+        hs.alert.show("✅ 完成！", 1)
       else
         hs.alert.show("轉譯失敗: " .. (err or "未知錯誤"), 3)
       end
@@ -377,7 +374,7 @@ end)
 -- 初始化
 -- ========================================
 
-hs.alert.show("Botrun Whisper v" .. VERSION .. " 已啟動\n按 F5 開始語音輸入", 2)
+hs.alert.show("🔨 波特槌 v1.2.7 已啟動\n🎤 按 F5 開始語音輸入", 2)
 
 -- 檢查依賴
 local function checkDependencies()
@@ -405,4 +402,4 @@ end
 
 checkDependencies()
 
-print("[Botrun Whisper v" .. VERSION .. "] 模組已載入")
+print("[🔨 波特槌 v1.2.7] 模組已載入")
