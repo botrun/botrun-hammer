@@ -1,10 +1,8 @@
 #!/bin/bash
 #
 # Botrun Whisper 解除安裝腳本
-# 版本：1.2.4
 #
 
-VERSION="1.2.4"
 set -e
 
 RED='\033[0;31m'

@@ -3,15 +3,12 @@
 # Botrun Whisper 安裝腳本
 # Mac 語音轉文字工具（F5 快捷鍵）
 #
-# 版本：1.2.4
-#
 # 使用方式：
 #   curl -fsSL https://raw.githubusercontent.com/botrun/botrun-hammer/main/install.sh | bash
 #   或
 #   ./install.sh
 #
 
-VERSION="1.2.4"
 set -e
 
 # 顏色
@@ -28,7 +25,7 @@ BOTRUN_DIR="$HOME/.botrun-hammer"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo ""
-echo -e "${BOLD}🎤 Botrun Whisper 安裝程式 v${VERSION}${NC}"
+echo -e "${BOLD}🎤 Botrun Whisper 安裝程式${NC}"
 echo -e "${CYAN}   Mac 語音轉文字工具（F5 快捷鍵）${NC}"
 echo ""
 
