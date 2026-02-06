@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.2.7 - Mac 語音轉文字
+  🔨 波特槌 v1.2.11 - Mac 語音轉文字
 
   由 NCHC Whisper API 驅動的語音輸入助手
 
@@ -14,7 +14,7 @@
 
   需求：
   - Hammerspoon
-  - sox (brew install sox)
+  - ffmpeg (brew install ffmpeg)
   - jq (brew install jq)
   - NCHC_GENAI_API_KEY 環境變數
 ]]--
@@ -26,17 +26,21 @@
 local config = {
   -- NCHC API
   apiUrl = "https://portal.genai.nchc.org.tw/api/v1/audio/transcriptions",
-  model = "Whisper-Large-V3-Turbo",
+  model = "Whisper-Large-V3",
   language = "zh",
 
   -- 錄音設定
-  tempFile = "/tmp/botrun-whisper-recording.wav",
+  recordingDir = os.getenv("HOME") .. "/Documents/botrun-whisper-recordings",
   sampleRate = 16000,
   channels = 1,
+  audioBitrate = "64k",  -- AAC 位元率
 
-  -- sox 路徑（Homebrew）
-  soxPath = "/opt/homebrew/bin/sox",
-  soxPathIntel = "/usr/local/bin/sox",
+  -- ffmpeg 路徑（Homebrew）
+  ffmpegPath = "/opt/homebrew/bin/ffmpeg",
+  ffmpegPathIntel = "/usr/local/bin/ffmpeg",
+
+  -- 保留成功的錄音檔（true=保留，false=刪除）
+  keepSuccessfulRecordings = true,
 
   -- 快捷鍵
   hotkey = "F5",
@@ -51,6 +55,7 @@ local state = {
   isRecording = false,
   recordingTask = nil,
   startTime = nil,
+  currentRecordingFile = nil,  -- 目前錄音檔案路徑
 }
 
 -- ========================================
@@ -67,6 +72,7 @@ local function getApiKey()
 
   -- 嘗試讀取 .env 檔案
   local envPaths = {
+    os.getenv("HOME") .. "/coding_projects/botrun-hammer/.env",  -- 本案開發目錄
     os.getenv("HOME") .. "/.botrun-hammer/.env",
     os.getenv("HOME") .. "/.env",
   }
@@ -89,18 +95,33 @@ local function getApiKey()
   return nil
 end
 
--- 取得 sox 路徑
-local function getSoxPath()
+-- 取得 ffmpeg 路徑
+local function getFFmpegPath()
   -- Apple Silicon
-  if hs.fs.attributes(config.soxPath) then
-    return config.soxPath
+  if hs.fs.attributes(config.ffmpegPath) then
+    return config.ffmpegPath
   end
   -- Intel Mac
-  if hs.fs.attributes(config.soxPathIntel) then
-    return config.soxPathIntel
+  if hs.fs.attributes(config.ffmpegPathIntel) then
+    return config.ffmpegPathIntel
   end
   -- 嘗試 PATH
-  return "sox"
+  return "ffmpeg"
+end
+
+-- 確保錄音資料夾存在
+local function ensureRecordingDir()
+  local dir = config.recordingDir
+  if not hs.fs.attributes(dir) then
+    hs.fs.mkdir(dir)
+  end
+  return dir
+end
+
+-- 產生時間戳檔名
+local function generateRecordingFilename()
+  local timestamp = os.date("%Y-%m-%d_%H-%M-%S")
+  return config.recordingDir .. "/" .. timestamp .. ".m4a"
 end
 
 -- 取得 jq 路徑
@@ -173,34 +194,43 @@ end
 
 -- 開始錄音
 local function startRecording()
-  local soxPath = getSoxPath()
+  local ffmpegPath = getFFmpegPath()
 
-  -- 檢查 sox 是否存在
-  if not hs.fs.attributes(soxPath) and soxPath ~= "sox" then
-    hs.alert.show("需要 sox 才能錄音\n請執行: brew install sox", 3)
+  -- 檢查 ffmpeg 是否存在
+  if not hs.fs.attributes(ffmpegPath) and ffmpegPath ~= "ffmpeg" then
+    hs.alert.show("需要 ffmpeg 才能錄音\n請執行: brew install ffmpeg", 3)
     return false
   end
 
+  -- 確保錄音資料夾存在
+  ensureRecordingDir()
+
+  -- 產生錄音檔名
+  state.currentRecordingFile = generateRecordingFilename()
   state.isRecording = true
   state.startTime = hs.timer.secondsSinceEpoch()
 
-  -- 啟動錄音
-  state.recordingTask = hs.task.new(soxPath, nil, {
-    "-d",                          -- 從預設輸入裝置錄音
-    "-r", tostring(config.sampleRate),  -- 取樣率
-    "-c", tostring(config.channels),    -- 單聲道
-    "-b", "16",                    -- 16-bit
-    config.tempFile                -- 輸出檔案
+  -- 啟動 ffmpeg 錄音（即時壓縮 M4A/AAC）
+  state.recordingTask = hs.task.new(ffmpegPath, nil, {
+    "-y",                                    -- 覆寫既有檔案
+    "-f", "avfoundation",                    -- macOS 音訊輸入
+    "-i", ":0",                              -- 預設麥克風
+    "-acodec", "aac",                        -- AAC 編碼
+    "-b:a", config.audioBitrate,             -- 位元率
+    "-ar", tostring(config.sampleRate),      -- 取樣率
+    "-ac", tostring(config.channels),        -- 聲道數
+    state.currentRecordingFile               -- 輸出檔案
   })
 
   local success = state.recordingTask:start()
 
   if success then
-    hs.alert.show("🎙️ 錄音中...\n(F5 停止，ESC 取消)", 2)
+    hs.alert.show("🎙️ 波特槌 v1.2.11 正在傾聽\n(F5 停止，ESC 取消)", 2)
     return true
   else
     hs.alert.show("啟動錄音失敗", 2)
     state.isRecording = false
+    state.currentRecordingFile = nil
     return false
   end
 end
@@ -220,15 +250,20 @@ local function stopRecording()
   state.isRecording = false
   state.startTime = nil
 
-  return duration
+  -- 回傳錄音時長和檔案路徑
+  local recordingFile = state.currentRecordingFile
+  return duration, recordingFile
 end
 
 -- 取消錄音
 local function cancelRecording()
-  stopRecording()
+  local _, recordingFile = stopRecording()
 
-  -- 刪除暫存檔
-  os.remove(config.tempFile)
+  -- 刪除錄音檔
+  if recordingFile then
+    os.remove(recordingFile)
+  end
+  state.currentRecordingFile = nil
 
   hs.alert.show("❌ 已取消錄音", 1.5)
 end
@@ -238,7 +273,7 @@ end
 -- ========================================
 
 -- 呼叫 NCHC Whisper API
-local function transcribe(callback)
+local function transcribe(recordingFile, callback)
   local apiKey = getApiKey()
 
   if not apiKey then
@@ -248,7 +283,7 @@ local function transcribe(callback)
   end
 
   -- 檢查檔案是否存在
-  if not hs.fs.attributes(config.tempFile) then
+  if not recordingFile or not hs.fs.attributes(recordingFile) then
     hs.alert.show("找不到錄音檔", 2)
     callback(nil, "找不到錄音檔案")
     return
@@ -265,14 +300,11 @@ local function transcribe(callback)
       -F "model=%s" \
       -F "language=%s" \
       -F "response_format=json"
-  ]], config.apiUrl, apiKey, config.tempFile, config.model, config.language)
+  ]], config.apiUrl, apiKey, recordingFile, config.model, config.language)
 
   hs.task.new("/bin/bash", function(exitCode, stdout, stderr)
-    -- 清理暫存檔
-    os.remove(config.tempFile)
-
     if exitCode ~= 0 then
-      hs.alert.show("連線失敗", 2)
+      hs.alert.show("連線失敗\n錄音已保留: " .. recordingFile:match("([^/]+)$"), 3)
       callback(nil, stderr)
       return
     end
@@ -283,12 +315,17 @@ local function transcribe(callback)
       local text = jsonOut:gsub("^%s*(.-)%s*$", "%1")  -- trim
 
       if text and text ~= "" and text ~= "null" then
+        -- 轉錄成功
+        if not config.keepSuccessfulRecordings then
+          os.remove(recordingFile)
+        end
+
         -- 簡體轉繁體後再 callback
         convertToTraditional(text, function(traditionalText)
           callback(traditionalText, nil)
         end)
       else
-        hs.alert.show("無法解析回應", 2)
+        hs.alert.show("無法解析回應\n錄音已保留: " .. recordingFile:match("([^/]+)$"), 3)
         callback(nil, "無法解析回應: " .. stdout)
       end
     end, {"-c", "echo '" .. stdout:gsub("'", "'\\''") .. "' | " .. jqPath .. " -r '.text // empty'"})
@@ -332,23 +369,27 @@ local function toggleRecording()
     startRecording()
   else
     -- 停止錄音並轉文字
-    local duration = stopRecording()
+    local duration, recordingFile = stopRecording()
 
     if duration < 0.5 then
       hs.alert.show("錄音時間太短", 1.5)
-      os.remove(config.tempFile)
+      if recordingFile then
+        os.remove(recordingFile)
+      end
+      state.currentRecordingFile = nil
       return
     end
 
     hs.alert.show(string.format("錄了 %s，轉譯中...", formatDuration(duration)), 1.5)
 
-    transcribe(function(text, err)
+    transcribe(recordingFile, function(text, err)
       if text then
         pasteText(text)
         hs.alert.show("✅ 完成！", 1)
       else
         hs.alert.show("轉譯失敗: " .. (err or "未知錯誤"), 3)
       end
+      state.currentRecordingFile = nil
     end)
   end
 end
@@ -374,7 +415,7 @@ end)
 -- 初始化
 -- ========================================
 
-hs.alert.show("🔨 波特槌 v1.2.7 已啟動\n🎤 按 F5 開始語音輸入", 2)
+hs.alert.show("🔨 波特槌 v1.2.11 已啟動\n🎤 按 F5 開始語音輸入", 2)
 
 -- 檢查依賴
 local function checkDependencies()
@@ -384,9 +425,9 @@ local function checkDependencies()
     table.insert(issues, "NCHC_GENAI_API_KEY 未設定")
   end
 
-  local soxPath = getSoxPath()
-  if soxPath == "sox" then
-    table.insert(issues, "sox 未安裝 (brew install sox)")
+  local ffmpegPath = getFFmpegPath()
+  if ffmpegPath == "ffmpeg" then
+    table.insert(issues, "ffmpeg 未安裝 (brew install ffmpeg)")
   end
 
   if not hs.fs.attributes("/opt/homebrew/bin/jq") and not hs.fs.attributes("/usr/local/bin/jq") and not hs.fs.attributes("/usr/bin/jq") then
@@ -402,4 +443,4 @@ end
 
 checkDependencies()
 
-print("[🔨 波特槌 v1.2.7] 模組已載入")
+print("[🔨 波特槌 v1.2.11] 模組已載入")
