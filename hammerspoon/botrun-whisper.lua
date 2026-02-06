@@ -1,13 +1,13 @@
 --[[
-  🔨 波特槌 v1.2.14 - Mac 語音轉文字
+  🔨 波特槌 v1.2.15 - Mac 語音轉文字
 
-  由 NCHC Whisper API 驅動的語音輸入助手
-  備案：Gemini API（NCHC 故障時自動切換）
+  由 Gemini API 驅動的語音輸入助手
+  備案：NCHC Whisper API（Gemini 故障時自動切換）
 
   功能：
   - F5 開始/停止錄音
-  - 自動呼叫 NCHC Whisper API
-  - NCHC 失敗時自動切換 Gemini API
+  - 自動呼叫 Gemini API 轉錄
+  - Gemini 失敗時自動切換 NCHC Whisper API
   - 轉錄文字貼到游標位置
   - ESC 取消錄音
 
@@ -18,8 +18,8 @@
   - Hammerspoon
   - ffmpeg (brew install ffmpeg)
   - jq (brew install jq)
-  - NCHC_GENAI_API_KEY 環境變數
-  - GEMINI_API_KEY 環境變數（備案用）
+  - GEMINI_API_KEY 環境變數
+  - NCHC_GENAI_API_KEY 環境變數（備案用）
 ]]--
 
 -- ========================================
@@ -244,7 +244,7 @@ local function startRecording()
   local success = state.recordingTask:start()
 
   if success then
-    hs.alert.show("🎙️ 波特槌 v1.2.14 正在傾聽\n(F5 停止，ESC 取消)", 2)
+    hs.alert.show("🎙️ 波特槌 v1.2.15 正在傾聽\n(F5 停止，ESC 取消)", 2)
     return true
   else
     hs.alert.show("啟動錄音失敗", 2)
@@ -557,7 +557,7 @@ end)
 -- 初始化
 -- ========================================
 
-hs.alert.show("🔨 波特槌 v1.2.14 已啟動\n🎤 按 F5 開始語音輸入", 2)
+hs.alert.show("🔨 波特槌 v1.2.15 已啟動\n🎤 按 F5 開始語音輸入", 2)
 
 -- 檢查依賴
 local function checkDependencies()
@@ -594,4 +594,4 @@ end
 
 checkDependencies()
 
-print("[🔨 波特槌 v1.2.14] 模組已載入（含 Gemini 備案）")
+print("[🔨 波特槌 v1.2.15] 模組已載入（Gemini 主要，NCHC 備案）")
