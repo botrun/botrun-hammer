@@ -1,11 +1,13 @@
 --[[
-  🔨 波特槌 v1.2.11 - Mac 語音轉文字
+  🔨 波特槌 v1.2.14 - Mac 語音轉文字
 
   由 NCHC Whisper API 驅動的語音輸入助手
+  備案：Gemini API（NCHC 故障時自動切換）
 
   功能：
   - F5 開始/停止錄音
   - 自動呼叫 NCHC Whisper API
+  - NCHC 失敗時自動切換 Gemini API
   - 轉錄文字貼到游標位置
   - ESC 取消錄音
 
@@ -17,6 +19,7 @@
   - ffmpeg (brew install ffmpeg)
   - jq (brew install jq)
   - NCHC_GENAI_API_KEY 環境變數
+  - GEMINI_API_KEY 環境變數（備案用）
 ]]--
 
 -- ========================================
@@ -24,10 +27,15 @@
 -- ========================================
 
 local config = {
-  -- NCHC API
-  apiUrl = "https://portal.genai.nchc.org.tw/api/v1/audio/transcriptions",
-  model = "Whisper-Large-V3",
+  -- NCHC API（主要）
+  nchcApiUrl = "https://portal.genai.nchc.org.tw/api/v1/audio/transcriptions",
+  nchcModel = "Whisper-Large-V3",
   language = "zh",
+
+  -- Gemini API（備案）
+  geminiApiUrl = "https://generativelanguage.googleapis.com/v1beta",
+  geminiModel = "gemini-3-flash-preview",
+  geminiUploadUrl = "https://generativelanguage.googleapis.com/upload/v1beta/files",
 
   -- 錄音設定
   recordingDir = os.getenv("HOME") .. "/Documents/botrun-whisper-recordings",
@@ -62,10 +70,10 @@ local state = {
 -- 工具函數
 -- ========================================
 
--- 取得 API Key（從環境變數或 .env 檔案）
-local function getApiKey()
+-- 從 .env 檔案讀取指定的 key
+local function getEnvKey(keyName)
   -- 先嘗試環境變數
-  local key = os.getenv("NCHC_GENAI_API_KEY")
+  local key = os.getenv(keyName)
   if key and key ~= "" then
     return key
   end
@@ -81,7 +89,8 @@ local function getApiKey()
     local file = io.open(path, "r")
     if file then
       for line in file:lines() do
-        local k = line:match("^NCHC_GENAI_API_KEY=(.+)$")
+        local pattern = "^" .. keyName .. "=(.+)$"
+        local k = line:match(pattern)
         if k then
           file:close()
           -- 去除引號
@@ -93,6 +102,16 @@ local function getApiKey()
   end
 
   return nil
+end
+
+-- 取得 NCHC API Key
+local function getNchcApiKey()
+  return getEnvKey("NCHC_GENAI_API_KEY")
+end
+
+-- 取得 Gemini API Key
+local function getGeminiApiKey()
+  return getEnvKey("GEMINI_API_KEY")
 end
 
 -- 取得 ffmpeg 路徑
@@ -225,7 +244,7 @@ local function startRecording()
   local success = state.recordingTask:start()
 
   if success then
-    hs.alert.show("🎙️ 波特槌 v1.2.11 正在傾聽\n(F5 停止，ESC 取消)", 2)
+    hs.alert.show("🎙️ 波特槌 v1.2.14 正在傾聽\n(F5 停止，ESC 取消)", 2)
     return true
   else
     hs.alert.show("啟動錄音失敗", 2)
@@ -273,23 +292,13 @@ end
 -- ========================================
 
 -- 呼叫 NCHC Whisper API
-local function transcribe(recordingFile, callback)
-  local apiKey = getApiKey()
+local function transcribeWithNCHC(recordingFile, callback)
+  local apiKey = getNchcApiKey()
 
   if not apiKey then
-    hs.alert.show("找不到 API Key\n請設定 NCHC_GENAI_API_KEY", 3)
-    callback(nil, "找不到 API Key")
+    callback(nil, "NCHC API Key 未設定")
     return
   end
-
-  -- 檢查檔案是否存在
-  if not recordingFile or not hs.fs.attributes(recordingFile) then
-    hs.alert.show("找不到錄音檔", 2)
-    callback(nil, "找不到錄音檔案")
-    return
-  end
-
-  hs.alert.show("✨ 轉錄中...", 1)
 
   -- 使用 curl 呼叫 API
   local curlCmd = string.format([[
@@ -300,12 +309,17 @@ local function transcribe(recordingFile, callback)
       -F "model=%s" \
       -F "language=%s" \
       -F "response_format=json"
-  ]], config.apiUrl, apiKey, recordingFile, config.model, config.language)
+  ]], config.nchcApiUrl, apiKey, recordingFile, config.nchcModel, config.language)
 
   hs.task.new("/bin/bash", function(exitCode, stdout, stderr)
     if exitCode ~= 0 then
-      hs.alert.show("連線失敗\n錄音已保留: " .. recordingFile:match("([^/]+)$"), 3)
-      callback(nil, stderr)
+      callback(nil, "NCHC 連線失敗: " .. (stderr or ""))
+      return
+    end
+
+    -- 檢查是否有錯誤回應
+    if stdout:find('"status"%s*:%s*"error"') or stdout:find("Upstream Service Error") then
+      callback(nil, "NCHC 服務異常: " .. stdout)
       return
     end
 
@@ -315,24 +329,152 @@ local function transcribe(recordingFile, callback)
       local text = jsonOut:gsub("^%s*(.-)%s*$", "%1")  -- trim
 
       if text and text ~= "" and text ~= "null" then
-        -- 轉錄成功
-        if not config.keepSuccessfulRecordings then
-          os.remove(recordingFile)
-        end
-
-        -- 簡體轉繁體後再 callback
-        convertToTraditional(text, function(traditionalText)
-          callback(traditionalText, nil)
-        end)
+        callback(text, nil)
       else
-        hs.alert.show("無法解析回應\n錄音已保留: " .. recordingFile:match("([^/]+)$"), 3)
-        callback(nil, "無法解析回應: " .. stdout)
+        callback(nil, "NCHC 無法解析回應: " .. stdout)
       end
     end, {"-c", "echo '" .. stdout:gsub("'", "'\\''") .. "' | " .. jqPath .. " -r '.text // empty'"})
     parseTask:start()
 
   end, {"-c", curlCmd})
   :start()
+end
+
+-- 呼叫 Gemini API（備案）
+local function transcribeWithGemini(recordingFile, callback)
+  local apiKey = getGeminiApiKey()
+
+  if not apiKey then
+    callback(nil, "Gemini API Key 未設定")
+    return
+  end
+
+  local jqPath = getJqPath()
+
+  -- Gemini 需要先上傳檔案，再呼叫 generateContent
+  -- 使用 shell script 一次完成整個流程
+  local geminiCmd = string.format([[
+    set -e
+    GEMINI_API_KEY="%s"
+    AUDIO_PATH="%s"
+    MIME_TYPE="audio/mp4"
+    NUM_BYTES=$(wc -c < "${AUDIO_PATH}" | tr -d ' ')
+
+    # Step 1: 初始化上傳
+    curl -s "%s?key=${GEMINI_API_KEY}" \
+      -D /tmp/gemini-upload-header.tmp \
+      -H "X-Goog-Upload-Protocol: resumable" \
+      -H "X-Goog-Upload-Command: start" \
+      -H "X-Goog-Upload-Header-Content-Length: ${NUM_BYTES}" \
+      -H "X-Goog-Upload-Header-Content-Type: ${MIME_TYPE}" \
+      -H "Content-Type: application/json" \
+      -d '{"file": {"display_name": "voice-recording"}}' > /dev/null
+
+    upload_url=$(grep -i "x-goog-upload-url: " /tmp/gemini-upload-header.tmp | cut -d" " -f2 | tr -d "\r")
+
+    if [ -z "$upload_url" ]; then
+      echo '{"error": "無法取得上傳 URL"}'
+      exit 1
+    fi
+
+    # Step 2: 上傳檔案
+    curl -s "${upload_url}" \
+      -H "Content-Length: ${NUM_BYTES}" \
+      -H "X-Goog-Upload-Offset: 0" \
+      -H "X-Goog-Upload-Command: upload, finalize" \
+      --data-binary "@${AUDIO_PATH}" > /tmp/gemini-file-info.json
+
+    file_uri=$(%s -r ".file.uri" /tmp/gemini-file-info.json)
+
+    if [ -z "$file_uri" ] || [ "$file_uri" = "null" ]; then
+      echo '{"error": "檔案上傳失敗"}'
+      exit 1
+    fi
+
+    # Step 3: 呼叫 generateContent 進行轉錄
+    curl -s "%s/models/%s:generateContent?key=${GEMINI_API_KEY}" \
+      -H 'Content-Type: application/json' \
+      -X POST \
+      -d '{
+        "contents": [{
+          "parts":[
+            {"text": "請將這段音訊轉錄成繁體中文文字，只輸出轉錄的文字內容，不要加任何說明"},
+            {"file_data":{"mime_type": "audio/mp4", "file_uri": "'"${file_uri}"'"}}
+          ]
+        }],
+        "generationConfig": {
+          "thinkingConfig": {
+            "thinkingBudget": 0
+          }
+        }
+      }'
+  ]], apiKey, recordingFile, config.geminiUploadUrl, jqPath, config.geminiApiUrl, config.geminiModel)
+
+  hs.task.new("/bin/bash", function(exitCode, stdout, stderr)
+    if exitCode ~= 0 then
+      callback(nil, "Gemini 連線失敗: " .. (stderr or ""))
+      return
+    end
+
+    -- 解析 Gemini 回應
+    local parseTask = hs.task.new("/bin/bash", function(_, jsonOut, _)
+      local text = jsonOut:gsub("^%s*(.-)%s*$", "%1")  -- trim
+
+      if text and text ~= "" and text ~= "null" then
+        callback(text, nil)
+      else
+        callback(nil, "Gemini 無法解析回應: " .. stdout)
+      end
+    end, {"-c", "echo '" .. stdout:gsub("'", "'\\''") .. "' | " .. jqPath .. " -r '.candidates[0].content.parts[0].text // empty'"})
+    parseTask:start()
+
+  end, {"-c", geminiCmd})
+  :start()
+end
+
+-- 主要轉錄函數（自動 Failover：Gemini 優先，NCHC 備用）
+local function transcribe(recordingFile, callback)
+  -- 檢查檔案是否存在
+  if not recordingFile or not hs.fs.attributes(recordingFile) then
+    hs.alert.show("找不到錄音檔", 2)
+    callback(nil, "找不到錄音檔案")
+    return
+  end
+
+  hs.alert.show("✨ Gemini 轉錄中...", 1)
+
+  -- 先嘗試 Gemini API
+  transcribeWithGemini(recordingFile, function(text, err)
+    if text then
+      -- Gemini 成功
+      if not config.keepSuccessfulRecordings then
+        os.remove(recordingFile)
+      end
+      convertToTraditional(text, function(traditionalText)
+        callback(traditionalText, nil)
+      end)
+    else
+      -- Gemini 失敗，嘗試 NCHC 備案
+      print("[波特槌] Gemini 失敗: " .. (err or "未知錯誤") .. "，切換到 NCHC")
+      hs.alert.show("⚠️ Gemini 故障，切換 NCHC...", 1.5)
+
+      transcribeWithNCHC(recordingFile, function(nchcText, nchcErr)
+        if nchcText then
+          -- NCHC 成功
+          if not config.keepSuccessfulRecordings then
+            os.remove(recordingFile)
+          end
+          convertToTraditional(nchcText, function(traditionalText)
+            callback(traditionalText, nil)
+          end)
+        else
+          -- 兩個都失敗
+          hs.alert.show("❌ 轉錄失敗\n錄音已保留: " .. recordingFile:match("([^/]+)$"), 3)
+          callback(nil, "Gemini 和 NCHC 都失敗")
+        end
+      end)
+    end
+  end)
 end
 
 -- ========================================
@@ -415,14 +557,19 @@ end)
 -- 初始化
 -- ========================================
 
-hs.alert.show("🔨 波特槌 v1.2.11 已啟動\n🎤 按 F5 開始語音輸入", 2)
+hs.alert.show("🔨 波特槌 v1.2.14 已啟動\n🎤 按 F5 開始語音輸入", 2)
 
 -- 檢查依賴
 local function checkDependencies()
   local issues = {}
+  local warnings = {}
 
-  if not getApiKey() then
+  if not getNchcApiKey() then
     table.insert(issues, "NCHC_GENAI_API_KEY 未設定")
+  end
+
+  if not getGeminiApiKey() then
+    table.insert(warnings, "GEMINI_API_KEY 未設定（備案不可用）")
   end
 
   local ffmpegPath = getFFmpegPath()
@@ -436,11 +583,15 @@ local function checkDependencies()
 
   if #issues > 0 then
     hs.timer.doAfter(2.5, function()
-      hs.alert.show("缺少依賴：\n" .. table.concat(issues, "\n"), 5)
+      hs.alert.show("❌ 缺少依賴：\n" .. table.concat(issues, "\n"), 5)
+    end)
+  elseif #warnings > 0 then
+    hs.timer.doAfter(2.5, function()
+      hs.alert.show("⚠️ 警告：\n" .. table.concat(warnings, "\n"), 3)
     end)
   end
 end
 
 checkDependencies()
 
-print("[🔨 波特槌 v1.2.11] 模組已載入")
+print("[🔨 波特槌 v1.2.14] 模組已載入（含 Gemini 備案）")
