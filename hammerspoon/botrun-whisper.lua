@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.2.15 - Mac 語音轉文字
+  🔨 波特槌 v1.3.0 - Mac 語音轉文字
 
   由 Gemini API 驅動的語音輸入助手
   備案：NCHC Whisper API（Gemini 故障時自動切換）
@@ -10,6 +10,8 @@
   - Gemini 失敗時自動切換 NCHC Whisper API
   - 轉錄文字貼到游標位置
   - ESC 取消錄音
+  - F6 瀏覽最近 30 筆轉錄文字歷史（選擇後複製到剪貼簿）
+  - F7 瀏覽最近 30 個錄音檔案（選擇後在 Finder 顯示）
 
   安裝：
   - ./install.sh
@@ -53,6 +55,12 @@ local config = {
   -- 快捷鍵
   hotkey = "F5",
   cancelKey = "escape",
+  historyTextKey = "F6",
+  historyFileKey = "F7",
+
+  -- 歷史紀錄
+  historyFile = os.getenv("HOME") .. "/Documents/botrun-whisper-recordings/history.json",
+  maxHistory = 30,
 }
 
 -- ========================================
@@ -208,6 +216,65 @@ local function formatDuration(seconds)
 end
 
 -- ========================================
+-- 歷史紀錄管理（SRP: 獨立負責歷史讀寫）
+-- ========================================
+
+-- 載入歷史紀錄（DRY: 統一讀取入口）
+local function loadHistory()
+  local file = io.open(config.historyFile, "r")
+  if not file then
+    return {}
+  end
+  local content = file:read("*a")
+  file:close()
+  if not content or content == "" then
+    return {}
+  end
+  local history = hs.json.decode(content)
+  return history or {}
+end
+
+-- 儲存歷史紀錄（DRY: 統一寫入入口）
+local function saveHistory(history)
+  ensureRecordingDir()
+  local content = hs.json.encode(history, true)
+  local file = io.open(config.historyFile, "w")
+  if file then
+    file:write(content)
+    file:close()
+  end
+end
+
+-- 新增一筆歷史紀錄（KISS: 簡單的 FIFO 佇列）
+local function addToHistory(text, filePath)
+  local history = loadHistory()
+  local entry = {
+    timestamp = os.date("%Y-%m-%d %H:%M:%S"),
+    text = text,
+    filePath = filePath,
+  }
+  table.insert(history, 1, entry)
+  while #history > config.maxHistory do
+    table.remove(history)
+  end
+  saveHistory(history)
+end
+
+-- UTF-8 安全截斷文字
+local function truncateText(text, maxChars)
+  if not text then return "" end
+  local len = utf8.len(text)
+  if not len or len <= maxChars then
+    return text
+  end
+  local bytePos = utf8.offset(text, maxChars + 1)
+  if bytePos then
+    return text:sub(1, bytePos - 1) .. "..."
+  end
+  return text
+end
+
+-- ========================================
 -- 錄音功能
 -- ========================================
 
@@ -244,7 +311,7 @@ local function startRecording()
   local success = state.recordingTask:start()
 
   if success then
-    hs.alert.show("🎙️ 波特槌 v1.2.15 正在傾聽\n(F5 停止，ESC 取消)", 2)
+    hs.alert.show("🎙️ 波特槌 v1.3.0 正在傾聽\n(F5 停止，ESC 取消)", 2)
     return true
   else
     hs.alert.show("啟動錄音失敗", 2)
@@ -502,6 +569,76 @@ local function pasteText(text)
 end
 
 -- ========================================
+-- 歷史紀錄選單（ISP: 文字與檔案分離為獨立介面）
+-- ========================================
+
+-- 文字歷史選單 (F6)：選擇後複製到剪貼簿
+local textChooser = hs.chooser.new(function(choice)
+  if not choice then return end
+  hs.pasteboard.setContents(choice.fullText)
+  hs.alert.show("✅ 已複製到剪貼簿", 1)
+end)
+
+textChooser:placeholderText("搜尋轉錄歷史...")
+textChooser:searchSubText(true)
+
+-- 檔案歷史選單 (F7)：選擇後在 Finder 顯示
+local fileChooser = hs.chooser.new(function(choice)
+  if not choice then return end
+  if choice.filePath and hs.fs.attributes(choice.filePath) then
+    hs.task.new("/usr/bin/open", nil, {"-R", choice.filePath}):start()
+  else
+    hs.alert.show("❌ 檔案不存在", 2)
+  end
+end)
+
+fileChooser:placeholderText("搜尋錄音檔案...")
+fileChooser:searchSubText(true)
+
+-- 顯示文字歷史（DRY: 共用 loadHistory）
+local function showTextHistory()
+  local history = loadHistory()
+  local choices = {}
+  for _, entry in ipairs(history) do
+    table.insert(choices, {
+      text = truncateText(entry.text, 80),
+      subText = entry.timestamp,
+      fullText = entry.text,
+    })
+  end
+  if #choices == 0 then
+    hs.alert.show("📋 尚無轉錄歷史", 1.5)
+    return
+  end
+  textChooser:choices(choices)
+  textChooser:show()
+end
+
+-- 顯示檔案歷史（DRY: 共用 loadHistory）
+local function showFileHistory()
+  local history = loadHistory()
+  local choices = {}
+  for _, entry in ipairs(history) do
+    if entry.filePath then
+      local filename = entry.filePath:match("([^/]+)$") or entry.filePath
+      local exists = hs.fs.attributes(entry.filePath) and "✅" or "❌"
+      local preview = truncateText(entry.text, 50)
+      table.insert(choices, {
+        text = exists .. " " .. filename,
+        subText = entry.timestamp .. " | " .. preview,
+        filePath = entry.filePath,
+      })
+    end
+  end
+  if #choices == 0 then
+    hs.alert.show("🎵 尚無錄音檔案", 1.5)
+    return
+  end
+  fileChooser:choices(choices)
+  fileChooser:show()
+end
+
+-- ========================================
 -- 主要流程
 -- ========================================
 
@@ -526,6 +663,7 @@ local function toggleRecording()
 
     transcribe(recordingFile, function(text, err)
       if text then
+        addToHistory(text, recordingFile)
         pasteText(text)
         hs.alert.show("✅ 完成！", 1)
       else
@@ -553,11 +691,17 @@ hs.hotkey.bind({}, config.cancelKey, function()
   end
 end)
 
+-- F6 文字歷史選單
+hs.hotkey.bind({}, config.historyTextKey, showTextHistory)
+
+-- F7 檔案歷史選單
+hs.hotkey.bind({}, config.historyFileKey, showFileHistory)
+
 -- ========================================
 -- 初始化
 -- ========================================
 
-hs.alert.show("🔨 波特槌 v1.2.15 已啟動\n🎤 按 F5 開始語音輸入", 2)
+hs.alert.show("🔨 波特槌 v1.3.0 已啟動\n🎤 F5 語音輸入 | F6 文字歷史 | F7 檔案歷史", 3)
 
 -- 檢查依賴
 local function checkDependencies()
@@ -594,4 +738,4 @@ end
 
 checkDependencies()
 
-print("[🔨 波特槌 v1.2.15] 模組已載入（Gemini 主要，NCHC 備案）")
+print("[🔨 波特槌 v1.3.0] 模組已載入（Gemini 主要，NCHC 備案｜F6 文字歷史｜F7 檔案歷史）")
