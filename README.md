@@ -1,7 +1,7 @@
 # Botrun Hammer 🔨 波特槌「一槌定音」
 
 **Mac 語音轉文字工具** - 按 F5 說話，文字自動輸入
-支援 claude code, gemini cli, 支援 mac 筆記本, 支援所有想像得到的 mac 東西都能語音轉文字
+- 支援 claude code, gemini cli, 支援 mac 筆記本, 支援所有想像得到的 mac 東西都能語音轉文字
 
 ---
 
