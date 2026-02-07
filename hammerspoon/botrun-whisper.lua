@@ -9,7 +9,7 @@
   - 自動呼叫 Gemini API 轉錄
   - Gemini 失敗時自動切換 NCHC Whisper API
   - 轉錄文字貼到游標位置
-  - ESC 取消錄音
+  - 再按 F5 停止錄音
   - F6 瀏覽最近 30 筆轉錄文字歷史（選擇後複製到剪貼簿）
   - F7 瀏覽最近 30 個錄音檔案（選擇後在 Finder 顯示）
   - 自動更新：啟動時及每 4 小時檢查 GitHub 最新版本
@@ -62,7 +62,6 @@ local config = {
 
   -- 快捷鍵
   hotkey = "F5",
-  cancelKey = "escape",
   historyTextKey = "F6",
   historyFileKey = "F7",
 
@@ -355,19 +354,6 @@ local function stopRecording()
   -- 回傳錄音時長和檔案路徑
   local recordingFile = state.currentRecordingFile
   return duration, recordingFile
-end
-
--- 取消錄音
-local function cancelRecording()
-  local _, recordingFile = stopRecording()
-
-  -- 刪除錄音檔
-  if recordingFile then
-    os.remove(recordingFile)
-  end
-  state.currentRecordingFile = nil
-
-  hs.alert.show("❌ 已取消錄音", 1.5)
 end
 
 -- ========================================
@@ -696,16 +682,6 @@ end
 
 -- F5 開始/停止錄音
 hs.hotkey.bind({}, config.hotkey, toggleRecording)
-
--- ESC 取消錄音（僅在錄音中有效）
-hs.hotkey.bind({}, config.cancelKey, function()
-  if state.isRecording then
-    cancelRecording()
-  else
-    -- 不攔截 ESC，讓系統處理
-    return false
-  end
-end)
 
 -- F6 文字歷史選單
 hs.hotkey.bind({}, config.historyTextKey, showTextHistory)
