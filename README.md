@@ -1,4 +1,4 @@
-# Botrun Whisper 🎤
+# Botrun Hammer 🔨 波特槌「一槌定音」
 
 **Mac 語音轉文字工具** - 按 F5 說話，文字自動輸入
 
