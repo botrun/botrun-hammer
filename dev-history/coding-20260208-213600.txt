@@ -1,0 +1,16 @@
+# 開發記錄
+# 時間：$(TZ='Asia/Taipei' date '+%Y-%m-%d %H:%M:%S') (台灣時間)
+
+## 任務
+拉取最新版本並更新本地安裝的波特槌
+
+## 執行步驟
+1. git pull 拉取最新程式碼（62a19ac → 0d9bdf6）
+2. 執行 install.sh 更新本地安裝
+3. 波特槌更新至 v1.3.0
+
+## 地雷與經驗
+- 無地雷，更新順利
+- install.sh 會自動偵測已安裝的元件（Homebrew、sox、jq、opencc），不會重複安裝
+- API Key 已設定的情況下會自動跳過設定步驟
+- Hammerspoon 會自動重新載入設定
