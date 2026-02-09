@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.3.0 - Mac 語音轉文字
+  🔨 波特槌 v1.4.0 - Mac 語音轉文字
 
   由 Gemini API 驅動的語音輸入助手
   備案：NCHC Whisper API（Gemini 故障時自動切換）
@@ -12,6 +12,7 @@
   - ESC 取消錄音
   - F6 瀏覽最近 30 筆轉錄文字歷史（選擇後複製到剪貼簿）
   - F7 瀏覽最近 30 個錄音檔案（選擇後在 Finder 顯示）
+  - 自動更新：啟動時及每 4 小時檢查 GitHub 最新版本
 
   安裝：
   - ./install.sh
@@ -23,6 +24,13 @@
   - GEMINI_API_KEY 環境變數
   - NCHC_GENAI_API_KEY 環境變數（備案用）
 ]]--
+
+-- 版本號（所有版本顯示共用此常數）
+local VERSION = "1.4.0"
+
+-- 目前腳本檔案路徑（用於自動更新）
+local SCRIPT_PATH = debug.getinfo(1, "S").source:match("^@(.+)$")
+  or (os.getenv("HOME") .. "/.hammerspoon/botrun-whisper.lua")
 
 -- ========================================
 -- 設定
@@ -61,6 +69,14 @@ local config = {
   -- 歷史紀錄
   historyFile = os.getenv("HOME") .. "/Documents/botrun-whisper-recordings/history.json",
   maxHistory = 30,
+
+  -- 自動更新
+  autoUpdate = {
+    enabled = true,
+    githubRawUrl = "https://raw.githubusercontent.com/botrun/botrun-hammer/main/hammerspoon/botrun-whisper.lua",
+    checkInterval = 4 * 60 * 60,  -- 每 4 小時檢查一次
+    startupDelay = 10,            -- 啟動後 10 秒開始第一次檢查
+  },
 }
 
 -- ========================================
@@ -311,7 +327,7 @@ local function startRecording()
   local success = state.recordingTask:start()
 
   if success then
-    hs.alert.show("🎙️ 波特槌 v1.3.0 正在傾聽\n(F5 停止，ESC 取消)", 2)
+    hs.alert.show("🎙️ 波特槌 v" .. VERSION .. " 正在傾聽\n(F5 停止，ESC 取消)", 2)
     return true
   else
     hs.alert.show("啟動錄音失敗", 2)
@@ -698,10 +714,113 @@ hs.hotkey.bind({}, config.historyTextKey, showTextHistory)
 hs.hotkey.bind({}, config.historyFileKey, showFileHistory)
 
 -- ========================================
+-- 自動更新
+-- ========================================
+
+-- 比較語意化版本號（回傳 1=a>b, -1=a<b, 0=a==b）
+local function compareVersions(a, b)
+  local function parseVersion(v)
+    local major, minor, patch = v:match("^(%d+)%.(%d+)%.(%d+)$")
+    return {tonumber(major) or 0, tonumber(minor) or 0, tonumber(patch) or 0}
+  end
+  local va = parseVersion(a)
+  local vb = parseVersion(b)
+  for i = 1, 3 do
+    if va[i] > vb[i] then return 1
+    elseif va[i] < vb[i] then return -1
+    end
+  end
+  return 0
+end
+
+-- 從腳本內容提取版本號
+local function extractVersion(content)
+  return content:match("波特槌 v(%d+%.%d+%.%d+)")
+end
+
+-- 檢查並套用更新
+local function checkForUpdate()
+  if state.isRecording then
+    print("[波特槌] 錄音中，跳過更新檢查")
+    return
+  end
+
+  print("[波特槌] 正在檢查更新...")
+
+  hs.http.asyncGet(config.autoUpdate.githubRawUrl, nil, function(status, body, headers)
+    if status ~= 200 or not body then
+      print("[波特槌] 更新檢查失敗 (HTTP " .. tostring(status) .. ")")
+      return
+    end
+
+    local remoteVersion = extractVersion(body)
+    if not remoteVersion then
+      print("[波特槌] 無法解析遠端版本號")
+      return
+    end
+
+    print("[波特槌] 本地: v" .. VERSION .. " | 遠端: v" .. remoteVersion)
+
+    if compareVersions(remoteVersion, VERSION) <= 0 then
+      print("[波特槌] 已是最新版本")
+      return
+    end
+
+    -- 有新版本，備份現有檔案
+    print("[波特槌] 發現新版本 v" .. remoteVersion .. "，正在更新...")
+    local backupPath = SCRIPT_PATH .. ".bak"
+    local currentFile = io.open(SCRIPT_PATH, "r")
+    if currentFile then
+      local currentContent = currentFile:read("*a")
+      currentFile:close()
+      local backupFile = io.open(backupPath, "w")
+      if backupFile then
+        backupFile:write(currentContent)
+        backupFile:close()
+      end
+    end
+
+    -- 寫入新版本
+    local newFile = io.open(SCRIPT_PATH, "w")
+    if newFile then
+      newFile:write(body)
+      newFile:close()
+
+      hs.alert.show("🔨 波特槌已更新 v" .. VERSION .. " → v" .. remoteVersion .. "\n自動重新載入中...", 3)
+      print("[波特槌] 更新成功：v" .. VERSION .. " → v" .. remoteVersion)
+
+      -- 延遲重新載入（讓使用者看到通知）
+      hs.timer.doAfter(2, function()
+        hs.reload()
+      end)
+    else
+      print("[波特槌] 更新寫入失敗")
+      hs.alert.show("⚠️ 波特槌更新寫入失敗", 3)
+    end
+  end)
+end
+
+-- 啟動自動更新計時器
+local autoUpdateTimer = nil
+
+local function startAutoUpdate()
+  if not config.autoUpdate.enabled then
+    print("[波特槌] 自動更新已停用")
+    return
+  end
+
+  -- 啟動後延遲檢查
+  hs.timer.doAfter(config.autoUpdate.startupDelay, checkForUpdate)
+
+  -- 定期檢查
+  autoUpdateTimer = hs.timer.doEvery(config.autoUpdate.checkInterval, checkForUpdate)
+end
+
+-- ========================================
 -- 初始化
 -- ========================================
 
-hs.alert.show("🔨 波特槌 v1.3.0 已啟動\n🎤 F5 語音輸入 | F6 文字歷史 | F7 檔案歷史", 3)
+hs.alert.show("🔨 波特槌 v" .. VERSION .. " 已啟動\n🎤 F5 語音輸入 | F6 文字歷史 | F7 檔案歷史", 3)
 
 -- 檢查依賴
 local function checkDependencies()
@@ -738,4 +857,7 @@ end
 
 checkDependencies()
 
-print("[🔨 波特槌 v1.3.0] 模組已載入（Gemini 主要，NCHC 備案｜F6 文字歷史｜F7 檔案歷史）")
+-- 啟動自動更新
+startAutoUpdate()
+
+print("[🔨 波特槌 v" .. VERSION .. "] 模組已載入（Gemini 主要，NCHC 備案｜F6 文字歷史｜F7 檔案歷史｜自動更新）")
