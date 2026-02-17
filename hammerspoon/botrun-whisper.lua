@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.4.0 - Mac 語音轉文字
+  🔨 波特槌 v1.4.4 - Mac 語音轉文字
 
   由 Gemini API 驅動的語音輸入助手
   備案：NCHC Whisper API（Gemini 故障時自動切換）
@@ -26,7 +26,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.4.0"
+local VERSION = "1.4.4"
 
 -- 目前腳本檔案路徑（用於自動更新）
 local SCRIPT_PATH = debug.getinfo(1, "S").source:match("^@(.+)$")
@@ -87,7 +87,12 @@ local state = {
   recordingTask = nil,
   startTime = nil,
   currentRecordingFile = nil,  -- 目前錄音檔案路徑
+  transcribeTimer = nil,       -- 轉錄動畫 timer
+  transcribeEmojiIndex = 1,    -- 目前 emoji 索引
 }
+
+-- 轉錄中動畫 emoji 列表
+local transcribeEmojis = {"✨", "🌟", "💫", "⭐", "🔮", "💭", "📝", "✍️"}
 
 -- ========================================
 -- 工具函數
@@ -472,8 +477,9 @@ local function transcribeWithGemini(recordingFile, callback)
           ]
         }],
         "generationConfig": {
+          "maxOutputTokens": 65536,
           "thinkingConfig": {
-            "thinkingBudget": 0
+            "thinkingLevel": "MINIMAL"
           }
         }
       }'
@@ -501,6 +507,26 @@ local function transcribeWithGemini(recordingFile, callback)
   :start()
 end
 
+-- 轉錄動畫控制
+local function startTranscribeAnimation()
+  state.transcribeEmojiIndex = 1
+  -- 先顯示第一個
+  hs.alert.show(transcribeEmojis[1] .. " 波特人已經聽到囉，正在幫忙寫出來...", 1.5)
+
+  -- 每秒更換 emoji
+  state.transcribeTimer = hs.timer.doEvery(1, function()
+    state.transcribeEmojiIndex = (state.transcribeEmojiIndex % #transcribeEmojis) + 1
+    hs.alert.show(transcribeEmojis[state.transcribeEmojiIndex] .. " 波特人已經聽到囉，正在幫忙寫出來...", 1.5)
+  end)
+end
+
+local function stopTranscribeAnimation()
+  if state.transcribeTimer then
+    state.transcribeTimer:stop()
+    state.transcribeTimer = nil
+  end
+end
+
 -- 主要轉錄函數（自動 Failover：Gemini 優先，NCHC 備用）
 local function transcribe(recordingFile, callback)
   -- 檢查檔案是否存在
@@ -510,24 +536,36 @@ local function transcribe(recordingFile, callback)
     return
   end
 
-  hs.alert.show("✨ Gemini 轉錄中...", 1)
+  -- 啟動轉錄動畫
+  startTranscribeAnimation()
 
-  -- 先嘗試 Gemini API
-  transcribeWithGemini(recordingFile, function(text, err)
+  -- 先嘗試 Gemini API（失敗會自動 retry 一次，再失敗才切 NCHC）
+  local function onGeminiResult(text, err, isRetry)
     if text then
       -- Gemini 成功
+      stopTranscribeAnimation()
       if not config.keepSuccessfulRecordings then
         os.remove(recordingFile)
       end
       convertToTraditional(text, function(traditionalText)
         callback(traditionalText, nil)
       end)
+    elseif not isRetry then
+      -- Gemini 第一次失敗，retry 一次
+      print("[波特槌] Gemini 第一次失敗: " .. (err or "未知錯誤") .. "，重試一次...")
+      hs.alert.show("⚠️ Gemini 暫時故障，重試中...", 1.5)
+      hs.timer.doAfter(1, function()
+        transcribeWithGemini(recordingFile, function(retryText, retryErr)
+          onGeminiResult(retryText, retryErr, true)
+        end)
+      end)
     else
-      -- Gemini 失敗，嘗試 NCHC 備案
-      print("[波特槌] Gemini 失敗: " .. (err or "未知錯誤") .. "，切換到 NCHC")
+      -- Gemini retry 也失敗，切換 NCHC 備案
+      print("[波特槌] Gemini 重試也失敗: " .. (err or "未知錯誤") .. "，切換到 NCHC")
       hs.alert.show("⚠️ Gemini 故障，切換 NCHC...", 1.5)
 
       transcribeWithNCHC(recordingFile, function(nchcText, nchcErr)
+        stopTranscribeAnimation()
         if nchcText then
           -- NCHC 成功
           if not config.keepSuccessfulRecordings then
@@ -537,12 +575,16 @@ local function transcribe(recordingFile, callback)
             callback(traditionalText, nil)
           end)
         else
-          -- 兩個都失敗
+          -- 全部都失敗
           hs.alert.show("❌ 轉錄失敗\n錄音已保留: " .. recordingFile:match("([^/]+)$"), 3)
-          callback(nil, "Gemini 和 NCHC 都失敗")
+          callback(nil, "Gemini（含重試）和 NCHC 都失敗")
         end
       end)
     end
+  end
+
+  transcribeWithGemini(recordingFile, function(text, err)
+    onGeminiResult(text, err, false)
   end)
 end
 
