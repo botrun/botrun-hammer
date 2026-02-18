@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.4.4 - Mac 語音轉文字
+  🔨 波特槌 v1.5.0 - Mac 語音轉文字
 
   由 Gemini API 驅動的語音輸入助手
   備案：NCHC Whisper API（Gemini 故障時自動切換）
@@ -26,7 +26,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.4.4"
+local VERSION = "1.5.0"
 
 -- 目前腳本檔案路徑（用於自動更新）
 local SCRIPT_PATH = debug.getinfo(1, "S").source:match("^@(.+)$")
@@ -295,6 +295,107 @@ local function truncateText(text, maxChars)
 end
 
 -- ========================================
+-- 麥克風偵測
+-- ========================================
+
+-- 虛擬音訊裝置關鍵字（不應作為錄音麥克風）
+local VIRTUAL_AUDIO_KEYWORDS = {
+  "teams", "zoom", "virtual", "soundflower", "blackhole",
+  "loopback", "aggregate", "obs", "discord", "webex"
+}
+
+-- 判斷裝置名稱是否為虛擬音訊裝置
+local function isVirtualDevice(name)
+  local lower = name:lower()
+  for _, keyword in ipairs(VIRTUAL_AUDIO_KEYWORDS) do
+    if lower:find(keyword, 1, true) then
+      return true
+    end
+  end
+  return false
+end
+
+-- 取得最佳麥克風的 avfoundation index
+-- 策略：1) 系統預設輸入裝置（若非虛擬）2) 內建麥克風 3) 第一個非虛擬裝置 4) fallback :0
+local function getBestMicIndex()
+  local ffmpegPath = getFFmpegPath()
+
+  -- 用 ffmpeg 列出 avfoundation 裝置
+  local output, status = hs.execute(ffmpegPath .. " -f avfoundation -list_devices true -i '' 2>&1")
+  if not output then
+    print("[波特槌] 無法列出音訊裝置，使用預設 :0")
+    return ":0"
+  end
+
+  -- 解析音訊輸入裝置（在 "AVFoundation audio devices:" 之後）
+  local inAudioSection = false
+  local audioDevices = {}  -- { {index=number, name=string}, ... }
+
+  for line in output:gmatch("[^\n]+") do
+    if line:find("AVFoundation audio devices:") then
+      inAudioSection = true
+    elseif inAudioSection then
+      local index, name = line:match("%[(%d+)%]%s+(.+)")
+      if index and name then
+        table.insert(audioDevices, {index = tonumber(index), name = name})
+      end
+    end
+  end
+
+  if #audioDevices == 0 then
+    print("[波特槌] 未偵測到音訊裝置，使用預設 :0")
+    return ":0"
+  end
+
+  -- 列出偵測到的裝置
+  print("[波特槌] 偵測到音訊裝置:")
+  for _, dev in ipairs(audioDevices) do
+    print(string.format("  [%d] %s%s", dev.index, dev.name,
+      isVirtualDevice(dev.name) and " (虛擬裝置，跳過)" or ""))
+  end
+
+  -- 策略 1: 系統預設輸入裝置（若非虛擬）
+  local defaultInput = hs.audiodevice.defaultInputDevice()
+  if defaultInput then
+    local defaultName = defaultInput:name()
+    if not isVirtualDevice(defaultName) then
+      for _, dev in ipairs(audioDevices) do
+        if dev.name:find(defaultName, 1, true) then
+          print("[波特槌] 使用系統預設麥克風: [" .. dev.index .. "] " .. dev.name)
+          return ":" .. dev.index
+        end
+      end
+    else
+      print("[波特槌] 系統預設為虛擬裝置 (" .. defaultName .. ")，尋找替代")
+    end
+  end
+
+  -- 策略 2: 尋找內建麥克風
+  local builtinKeywords = {"built%-in", "macbook", "內建"}
+  for _, dev in ipairs(audioDevices) do
+    local lower = dev.name:lower()
+    for _, kw in ipairs(builtinKeywords) do
+      if lower:find(kw) then
+        print("[波特槌] 使用內建麥克風: [" .. dev.index .. "] " .. dev.name)
+        return ":" .. dev.index
+      end
+    end
+  end
+
+  -- 策略 3: 第一個非虛擬裝置
+  for _, dev in ipairs(audioDevices) do
+    if not isVirtualDevice(dev.name) then
+      print("[波特槌] 使用第一個非虛擬裝置: [" .. dev.index .. "] " .. dev.name)
+      return ":" .. dev.index
+    end
+  end
+
+  -- 策略 4: fallback
+  print("[波特槌] 所有裝置皆為虛擬，使用預設 :0")
+  return ":0"
+end
+
+-- ========================================
 -- 錄音功能
 -- ========================================
 
@@ -316,11 +417,14 @@ local function startRecording()
   state.isRecording = true
   state.startTime = hs.timer.secondsSinceEpoch()
 
+  -- 偵測最佳麥克風
+  local micIndex = getBestMicIndex()
+
   -- 啟動 ffmpeg 錄音（即時壓縮 M4A/AAC）
   state.recordingTask = hs.task.new(ffmpegPath, nil, {
     "-y",                                    -- 覆寫既有檔案
     "-f", "avfoundation",                    -- macOS 音訊輸入
-    "-i", ":0",                              -- 預設麥克風
+    "-i", micIndex,                          -- 智慧偵測麥克風
     "-acodec", "aac",                        -- AAC 編碼
     "-b:a", config.audioBitrate,             -- 位元率
     "-ar", tostring(config.sampleRate),      -- 取樣率
