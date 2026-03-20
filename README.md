@@ -4,17 +4,54 @@
 
 ## Quick Install
 
-**一鍵安裝 / One-liner install (macOS only):**
+> **不需要 GitHub 帳號或 token** — 本專案完全公開
+>
+> **No GitHub account or token needed** — this project is fully public
+
+### 安裝前你需要 / Prerequisites
+
+| 需求 | 說明 | 怎麼取得 |
+|------|------|----------|
+| **macOS 10.15+** | 唯一支援的作業系統 | 你的 Mac |
+| **Gemini API Key**（免費） | 主要語音轉文字引擎 | [Google AI Studio](https://aistudio.google.com/apikey)（Google 帳號即可） |
+| **NCHC API Key**（可選） | 備案引擎，Gemini 掛了自動切換 | [NCHC GenAI Portal](https://portal.genai.nchc.org.tw/) |
+
+> 其他依賴（Homebrew、Hammerspoon、ffmpeg、jq、opencc）安裝腳本會**自動處理**
+
+### 方法一：一鍵安裝（推薦）
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/botrun/botrun-hammer/main/install.sh | bash
 ```
 
-**帶 API Key 靜默安裝 / Silent install with API keys:**
+安裝過程會互動詢問 API Key，照提示輸入即可。
+
+### 方法二：帶 API Key 靜默安裝
 
 ```bash
-GEMINI_API_KEY=your_key NCHC_GENAI_API_KEY=your_key curl -fsSL https://raw.githubusercontent.com/botrun/botrun-hammer/main/install.sh | bash
+GEMINI_API_KEY=你的key curl -fsSL https://raw.githubusercontent.com/botrun/botrun-hammer/main/install.sh | bash
 ```
+
+適合批次部署或 CI/CD，不會互動詢問。NCHC key 可選加：
+
+```bash
+GEMINI_API_KEY=xxx NCHC_GENAI_API_KEY=yyy curl -fsSL https://raw.githubusercontent.com/botrun/botrun-hammer/main/install.sh | bash
+```
+
+### 方法三：clone 安裝
+
+```bash
+git clone https://github.com/botrun/botrun-hammer.git
+cd botrun-hammer
+./install.sh
+```
+
+### 安裝後首次設定
+
+安裝完成後，系統會要求兩個權限（僅首次）：
+
+1. **輔助使用權限** — 系統設定 → 隱私權與安全性 → 輔助使用 → 勾選 Hammerspoon
+2. **麥克風權限** — 首次按 F5 錄音時，系統會自動彈窗詢問
 
 ---
 
@@ -58,28 +95,6 @@ GEMINI_API_KEY=your_key NCHC_GENAI_API_KEY=your_key curl -fsSL https://raw.githu
 - 🚀 **開機自動啟動** - 安裝後自動常駐
 - 🎤 **智慧麥克風偵測** - 自動跳過虛擬音訊裝置
 - 🔁 **自動更新** - 每 4 小時檢查 GitHub 最新版本
-
----
-
-## 快速安裝
-
-### 方法一：一鍵安裝（推薦）
-
-打開終端機，貼上：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/botrun/botrun-hammer/main/install.sh | bash
-```
-
-### 方法二：手動安裝
-
-```bash
-git clone https://github.com/botrun/botrun-hammer.git
-cd botrun-hammer
-./install.sh
-```
-
----
 
 ## 使用方式
 
@@ -131,37 +146,6 @@ NCHC_GENAI_API_KEY=你的NCHC_API_Key
 ```
 
 > 安裝時會自動詢問 API Key，也可以之後手動設定。
-
----
-
-## 系統需求
-
-- macOS 10.15 以上
-- Homebrew（安裝腳本會自動安裝）
-
-### 自動安裝的依賴
-
-- **Hammerspoon** - macOS 自動化工具
-- **ffmpeg** - 錄音與音訊處理
-- **jq** - JSON 解析
-- **opencc** - 簡繁轉換
-
----
-
-## 首次使用設定
-
-### 授權 Accessibility 權限
-
-首次使用需要授權 Hammerspoon 使用輔助使用權限：
-
-1. 開啟「系統設定」
-2. 選擇「隱私權與安全性」
-3. 選擇「輔助使用」
-4. 將 **Hammerspoon** 加入並打勾
-
-### 授權麥克風權限
-
-首次錄音時，系統會詢問麥克風權限，請允許。
 
 ---
 
