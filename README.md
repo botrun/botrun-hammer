@@ -1,6 +1,6 @@
 # Botrun Hammer 🔨 波特槌「一槌定音」
 
-**Mac Voice-to-Text Tool** - Press F5 to speak, text auto-types at cursor
+**Mac Voice-to-Text Tool** - Press fn+F5 to speak, text auto-types at cursor
 
 ## Quick Install
 
@@ -51,7 +51,7 @@ cd botrun-hammer
 安裝完成後，系統會要求兩個權限（僅首次）：
 
 1. **輔助使用權限** — 系統設定 → 隱私權與安全性 → 輔助使用 → 勾選 Hammerspoon
-2. **麥克風權限** — 首次按 F5 錄音時，系統會自動彈窗詢問
+2. **麥克風權限** — 首次按 fn+F5 錄音時，系統會自動彈窗詢問
 
 ---
 
@@ -100,16 +100,16 @@ cd botrun-hammer
 
 | 快捷鍵 | 功能 |
 |--------|------|
-| **F5** | 開始錄音 / 停止錄音並轉文字 |
-| **F6** | 瀏覽轉錄文字歷史（複製到剪貼簿） |
-| **F7** | 瀏覽錄音檔案歷史（在 Finder 顯示） |
+| **fn+F5** | 開始錄音 / 停止錄音並轉文字 |
+| **fn+F6** | 瀏覽轉錄文字歷史（複製到剪貼簿） |
+| **fn+F7** | 瀏覽錄音檔案歷史（在 Finder 顯示） |
 
 ### 操作流程
 
 1. 把游標放在你想輸入文字的地方
-2. 按 **F5** 開始錄音（會看到提示）
+2. 按 **fn+F5** 開始錄音（會看到提示）
 3. 說話...
-4. 再按 **F5** 停止錄音
+4. 再按 **fn+F5** 停止錄音
 5. 等待轉錄完成，文字會自動輸入
 
 ---
@@ -151,7 +151,7 @@ NCHC_GENAI_API_KEY=你的NCHC_API_Key
 
 ## 疑難排解
 
-### Q: 按 F5 沒反應？
+### Q: 按 fn+F5 沒反應？
 
 1. 確認 Hammerspoon 正在執行（選單列有 🔨 圖示）
 2. 確認已授權 Accessibility 權限
@@ -210,7 +210,7 @@ nano ~/.hammerspoon/init.lua
 
 ### What is Botrun Hammer?
 
-Botrun Hammer is a Mac voice-to-text tool powered by Hammerspoon. Press **F5** to start recording, press **F5** again to stop -- your speech is transcribed and typed at the cursor position automatically. It works everywhere: Claude Code, Gemini CLI, any text field on macOS.
+Botrun Hammer is a Mac voice-to-text tool powered by Hammerspoon. Press **fn+F5** to start recording, press **fn+F5** again to stop -- your speech is transcribed and typed at the cursor position automatically. It works everywhere: Claude Code, Gemini CLI, any text field on macOS.
 
 ### Quick Start
 
@@ -231,9 +231,9 @@ curl -fsSL https://raw.githubusercontent.com/botrun/botrun-hammer/main/install.s
 
 | Key | Action |
 |-----|--------|
-| **F5** | Start / stop recording & transcribe |
-| **F6** | Browse transcription history |
-| **F7** | Browse audio file history |
+| **fn+F5** | Start / stop recording & transcribe |
+| **fn+F6** | Browse transcription history |
+| **fn+F7** | Browse audio file history |
 
 ---
 
