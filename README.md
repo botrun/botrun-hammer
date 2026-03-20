@@ -1,11 +1,31 @@
 # Botrun Hammer 🔨 波特槌「一槌定音」
 
-**Mac 語音轉文字工具** - 按 F5 說話，文字自動輸入
-- 支援 claude code, gemini cli, 支援 mac 筆記本, 支援所有想像得到的 mac 東西都能語音轉文字
+**Mac Voice-to-Text Tool** - Press F5 to speak, text auto-types at cursor
+
+## Quick Install
+
+**一鍵安裝 / One-liner install (macOS only):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/botrun/botrun-hammer/main/install.sh | bash
+```
+
+**帶 API Key 靜默安裝 / Silent install with API keys:**
+
+```bash
+GEMINI_API_KEY=your_key NCHC_GENAI_API_KEY=your_key curl -fsSL https://raw.githubusercontent.com/botrun/botrun-hammer/main/install.sh | bash
+```
 
 ---
 
 ## 🎉 Release Notes
+
+### v1.5.x - 更聰明更穩定
+
+- **v1.5.1** - 完全移除 ESC 按鍵綁定，不再攔截系統 ESC，不影響其他應用程式
+- **v1.5.0** - 智慧麥克風偵測，自動跳過 Teams/Zoom 等虛擬音訊裝置
+- **v1.4.4** - Gemini API 失敗自動重試一次，再失敗才切換 NCHC
+- **v1.4.0** - 自動更新功能，啟動時及每 4 小時自動檢查 GitHub 最新版本
 
 ### v1.3.0 - 後悔藥來了！
 
@@ -36,6 +56,8 @@
 - 🎯 **游標位置輸入** - 轉錄文字自動貼到游標位置
 - 🔄 **簡繁轉換** - 自動將簡體轉為繁體中文
 - 🚀 **開機自動啟動** - 安裝後自動常駐
+- 🎤 **智慧麥克風偵測** - 自動跳過虛擬音訊裝置
+- 🔁 **自動更新** - 每 4 小時檢查 GitHub 最新版本
 
 ---
 
@@ -66,7 +88,6 @@ cd botrun-hammer
 | **F5** | 開始錄音 / 停止錄音並轉文字 |
 | **F6** | 瀏覽轉錄文字歷史（複製到剪貼簿） |
 | **F7** | 瀏覽錄音檔案歷史（在 Finder 顯示） |
-| **ESC** | 取消錄音 |
 
 ### 操作流程
 
@@ -80,28 +101,36 @@ cd botrun-hammer
 
 ## API Key 設定
 
-本工具使用國網中心 GenAI API，需要申請 API Key：
+本工具使用 **Gemini API** 作為主要轉錄引擎，國網中心 NCHC 作為備援。
 
-### 申請 API Key
+### 設定 Gemini API Key（主要）
 
-1. 前往 [NCHC GenAI Portal](https://portal.genai.nchc.org.tw/)
-2. 註冊/登入帳號
-3. 申請 API Key
-
-### 設定 API Key
-
-安裝時會自動詢問，也可以手動設定：
+1. 前往 [Google AI Studio](https://aistudio.google.com/apikey) 取得 API Key
+2. 編輯設定檔：
 
 ```bash
-# 編輯設定檔
 nano ~/.botrun-hammer/.env
 ```
 
 填入：
 
 ```
-NCHC_GENAI_API_KEY=你的API_Key
+GEMINI_API_KEY=你的Gemini_API_Key
 ```
+
+### 設定 NCHC API Key（備援）
+
+1. 前往 [NCHC GenAI Portal](https://portal.genai.nchc.org.tw/)
+2. 註冊/登入帳號
+3. 申請 API Key
+
+填入：
+
+```
+NCHC_GENAI_API_KEY=你的NCHC_API_Key
+```
+
+> 安裝時會自動詢問 API Key，也可以之後手動設定。
 
 ---
 
@@ -113,7 +142,7 @@ NCHC_GENAI_API_KEY=你的API_Key
 ### 自動安裝的依賴
 
 - **Hammerspoon** - macOS 自動化工具
-- **sox** - 錄音工具
+- **ffmpeg** - 錄音與音訊處理
 - **jq** - JSON 解析
 - **opencc** - 簡繁轉換
 
@@ -147,7 +176,7 @@ NCHC_GENAI_API_KEY=你的API_Key
 ### Q: 錄音失敗？
 
 1. 確認已授權麥克風權限
-2. 確認 sox 已安裝：`brew install sox`
+2. 確認 ffmpeg 已安裝：`brew install ffmpeg`
 
 ### Q: 轉錄失敗？
 
@@ -193,6 +222,37 @@ nano ~/.hammerspoon/init.lua
 
 ---
 
+## English
+
+### What is Botrun Hammer?
+
+Botrun Hammer is a Mac voice-to-text tool powered by Hammerspoon. Press **F5** to start recording, press **F5** again to stop -- your speech is transcribed and typed at the cursor position automatically. It works everywhere: Claude Code, Gemini CLI, any text field on macOS.
+
+### Quick Start
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/botrun/botrun-hammer/main/install.sh | bash
+```
+
+### Setup
+
+1. Get a Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey)
+2. Add it to `~/.botrun-hammer/.env`:
+   ```
+   GEMINI_API_KEY=your_key_here
+   ```
+3. Grant Hammerspoon **Accessibility** and **Microphone** permissions in System Settings
+
+### Shortcuts
+
+| Key | Action |
+|-----|--------|
+| **F5** | Start / stop recording & transcribe |
+| **F6** | Browse transcription history |
+| **F7** | Browse audio file history |
+
+---
+
 ## 授權
 
 MIT License
@@ -201,5 +261,6 @@ MIT License
 
 ## 致謝
 
-- [NCHC GenAI](https://portal.genai.nchc.org.tw/) - 提供 Whisper API
+- [Google Gemini](https://aistudio.google.com/) - 主要語音轉錄 API
+- [NCHC GenAI](https://portal.genai.nchc.org.tw/) - 備援 Whisper API
 - [Hammerspoon](https://www.hammerspoon.org/) - macOS 自動化框架

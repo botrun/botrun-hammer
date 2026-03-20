@@ -5,56 +5,132 @@
 
 set -e
 
+# 顏色
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+# 路徑
 HAMMERSPOON_DIR="$HOME/.hammerspoon"
 BOTRUN_DIR="$HOME/.botrun-hammer"
+RECORDINGS_DIR="$HOME/Documents/botrun-whisper-recordings"
 
 echo ""
-echo -e "${BOLD}🗑️ Botrun Whisper 解除安裝${NC}"
+echo -e "${BOLD}🗑️  Botrun Whisper 解除安裝${NC}"
+echo -e "${CYAN}   將移除波特槌語音轉文字工具${NC}"
 echo ""
 
-# 移除 Lua 腳本
-if [[ -f "$HAMMERSPOON_DIR/botrun-whisper.lua" ]]; then
-    rm "$HAMMERSPOON_DIR/botrun-whisper.lua"
-    echo -e "${GREEN}✅ 已移除 Lua 腳本${NC}"
+# ========================================
+# 確認
+# ========================================
+
+if [[ -t 0 ]]; then
+    echo -e "${YELLOW}⚠️  即將解除安裝 Botrun Whisper，此操作無法復原${NC}"
+    echo ""
+    read -p "確定要繼續嗎？(y/N) " -n 1 -r
+    echo ""
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo ""
+        echo -e "${CYAN}已取消解除安裝${NC}"
+        echo ""
+        exit 0
+    fi
+    echo ""
 fi
 
+# ========================================
+# 移除 Lua 腳本
+# ========================================
+
+echo "📝 移除 Lua 腳本..."
+
+if [[ -f "$HAMMERSPOON_DIR/botrun-whisper.lua" ]]; then
+    rm "$HAMMERSPOON_DIR/botrun-whisper.lua"
+    echo -e "${GREEN}✅ 已移除 botrun-whisper.lua${NC}"
+else
+    echo -e "${CYAN}   botrun-whisper.lua 不存在，跳過${NC}"
+fi
+
+# 移除舊版腳本
+if [[ -f "$HAMMERSPOON_DIR/nchc-whisper.lua" ]]; then
+    rm "$HAMMERSPOON_DIR/nchc-whisper.lua"
+    echo -e "${GREEN}✅ 已移除 nchc-whisper.lua（舊版）${NC}"
+fi
+
+# ========================================
 # 從 init.lua 移除載入指令
+# ========================================
+
+echo "📝 更新 Hammerspoon 設定..."
+
 if [[ -f "$HAMMERSPOON_DIR/init.lua" ]]; then
     # 建立備份
     cp "$HAMMERSPOON_DIR/init.lua" "$HAMMERSPOON_DIR/init.lua.bak"
 
-    # 移除相關行
-    sed -i '' '/botrun-whisper/d' "$HAMMERSPOON_DIR/init.lua"
+    # 移除 botrun-whisper 相關行
+    sed -i '' '/require("botrun-whisper")/d' "$HAMMERSPOON_DIR/init.lua"
     sed -i '' '/Botrun Whisper/d' "$HAMMERSPOON_DIR/init.lua"
 
+    # 移除 nchc-whisper 相關行（舊版）
+    sed -i '' '/require("nchc-whisper")/d' "$HAMMERSPOON_DIR/init.lua"
+    sed -i '' '/NCHC Whisper/d' "$HAMMERSPOON_DIR/init.lua"
+
     echo -e "${GREEN}✅ 已更新 init.lua（備份：init.lua.bak）${NC}"
+else
+    echo -e "${CYAN}   init.lua 不存在，跳過${NC}"
 fi
 
-# 詢問是否移除設定目錄
+# ========================================
+# 移除設定目錄
+# ========================================
+
 echo ""
-if [[ -t 0 ]]; then
-    # 互動模式：詢問
-    read -p "是否移除設定目錄 $BOTRUN_DIR？(y/N) " -n 1 -r
-    echo ""
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        rm -rf "$BOTRUN_DIR"
-        echo -e "${GREEN}✅ 已移除設定目錄${NC}"
+if [[ -d "$BOTRUN_DIR" ]]; then
+    if [[ -t 0 ]]; then
+        read -p "是否移除設定目錄 $BOTRUN_DIR？（包含 API Key）(y/N) " -n 1 -r
+        echo ""
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            rm -rf "$BOTRUN_DIR"
+            echo -e "${GREEN}✅ 已移除設定目錄${NC}"
+        else
+            echo -e "${YELLOW}⚠️  保留設定目錄${NC}"
+        fi
     else
-        echo -e "${YELLOW}⚠️ 保留設定目錄（包含 API Key）${NC}"
+        echo -e "${YELLOW}⚠️  非互動模式，保留設定目錄 $BOTRUN_DIR${NC}"
     fi
 else
-    # 非互動模式：保留設定目錄
-    echo -e "${YELLOW}⚠️ 非互動模式，保留設定目錄（包含 API Key）${NC}"
+    echo -e "${CYAN}   設定目錄不存在，跳過${NC}"
 fi
 
-# 重新載入 Hammerspoon（加 timeout 避免卡住）
+# ========================================
+# 移除錄音目錄
+# ========================================
+
+if [[ -d "$RECORDINGS_DIR" ]]; then
+    if [[ -t 0 ]]; then
+        read -p "是否移除錄音目錄 $RECORDINGS_DIR？(y/N) " -n 1 -r
+        echo ""
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            rm -rf "$RECORDINGS_DIR"
+            echo -e "${GREEN}✅ 已移除錄音目錄${NC}"
+        else
+            echo -e "${YELLOW}⚠️  保留錄音目錄${NC}"
+        fi
+    else
+        echo -e "${YELLOW}⚠️  非互動模式，保留錄音目錄 $RECORDINGS_DIR${NC}"
+    fi
+fi
+
+# ========================================
+# 重新載入 Hammerspoon
+# ========================================
+
 if pgrep -x "Hammerspoon" > /dev/null; then
+    echo ""
+    echo "🔄 重新載入 Hammerspoon..."
     if command -v hs &> /dev/null; then
         timeout 5 hs -c "hs.reload()" 2>/dev/null || true
     else
@@ -62,10 +138,16 @@ if pgrep -x "Hammerspoon" > /dev/null; then
     fi
 fi
 
+# ========================================
+# 完成
+# ========================================
+
 echo ""
+echo -e "${GREEN}═══════════════════════════════════════════${NC}"
 echo -e "${GREEN}✅ Botrun Whisper 已解除安裝${NC}"
+echo -e "${GREEN}═══════════════════════════════════════════${NC}"
 echo ""
 echo -e "${YELLOW}💡 提示：${NC}"
 echo "   • Hammerspoon 本體未移除（brew uninstall --cask hammerspoon）"
-echo "   • sox、jq、opencc 等工具未移除"
+echo "   • ffmpeg、jq、opencc 等工具未移除"
 echo ""
