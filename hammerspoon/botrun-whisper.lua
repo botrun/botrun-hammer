@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.5.0 - Mac 語音轉文字
+  🔨 波特槌 v1.5.1 - Mac 語音轉文字
 
   由 Gemini API 驅動的語音輸入助手
   備案：NCHC Whisper API（Gemini 故障時自動切換）
@@ -26,7 +26,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.5.0"
+local VERSION = "1.5.1"
 
 -- 目前腳本檔案路徑（用於自動更新）
 local SCRIPT_PATH = debug.getinfo(1, "S").source:match("^@(.+)$")
@@ -435,7 +435,7 @@ local function startRecording()
   local success = state.recordingTask:start()
 
   if success then
-    hs.alert.show("🎙️ 波特槌 v" .. VERSION .. " 正在傾聽\n(F5 停止，ESC 取消)", 2)
+    hs.alert.show("🎙️ 波特槌 v" .. VERSION .. " 正在傾聽\n(再按 F5 停止)", 2)
     return true
   else
     hs.alert.show("啟動錄音失敗", 2)
