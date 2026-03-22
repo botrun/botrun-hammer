@@ -57,6 +57,14 @@ cd botrun-hammer
 
 ## 🎉 Release Notes
 
+### v1.6.0 - 離線優先錄音
+
+停止錄音後立即寫入歷史紀錄，不再等轉錄結果。轉錄失敗的錄音也會出現在 fn+F7 檔案歷史中（⚠️ 標記），不怕找不到。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/botrun/botrun-hammer/main/install.sh | bash
+```
+
 ### v1.5.x - 更聰明更穩定
 
 - **v1.5.1** - 完全移除 ESC 按鍵綁定，不再攔截系統 ESC，不影響其他應用程式
