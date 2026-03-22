@@ -61,9 +61,12 @@ cd botrun-hammer
 
 停止錄音後立即寫入歷史紀錄，不再等轉錄結果。轉錄失敗的錄音也會出現在 fn+F7 檔案歷史中（⚠️ 標記），不怕找不到。
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/botrun/botrun-hammer/main/install.sh | bash
-```
+> **已安裝的使用者**：不用做任何事，波特槌每 4 小時自動檢查更新，會自動升級。
+>
+> **新安裝**：
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/botrun/botrun-hammer/main/install.sh | bash
+> ```
 
 ### v1.5.x - 更聰明更穩定
 
