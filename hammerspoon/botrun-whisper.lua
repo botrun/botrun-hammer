@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.5.1 - Mac 語音轉文字
+  🔨 波特槌 v1.6.0 - Mac 語音轉文字
 
   由 Gemini API 驅動的語音輸入助手
   備案：NCHC Whisper API（Gemini 故障時自動切換）
@@ -26,7 +26,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.5.1"
+local VERSION = "1.6.0"
 
 -- 目前腳本檔案路徑（用於自動更新）
 local SCRIPT_PATH = debug.getinfo(1, "S").source:match("^@(.+)$")
@@ -266,18 +266,34 @@ local function saveHistory(history)
 end
 
 -- 新增一筆歷史紀錄（KISS: 簡單的 FIFO 佇列）
-local function addToHistory(text, filePath)
+-- status: "transcribing" | "done" | "failed"（向下相容：無 status 視為 done）
+local function addToHistory(text, filePath, status)
   local history = loadHistory()
   local entry = {
     timestamp = os.date("%Y-%m-%d %H:%M:%S"),
     text = text,
     filePath = filePath,
+    status = status or "done",
   }
   table.insert(history, 1, entry)
   while #history > config.maxHistory do
     table.remove(history)
   end
   saveHistory(history)
+end
+
+-- 根據檔案路徑更新歷史紀錄（轉錄完成後回寫文字與狀態）
+local function updateHistoryEntry(filePath, text, status)
+  local history = loadHistory()
+  for _, entry in ipairs(history) do
+    if entry.filePath == filePath then
+      entry.text = text
+      entry.status = status
+      saveHistory(history)
+      return true
+    end
+  end
+  return false
 end
 
 -- UTF-8 安全截斷文字
@@ -769,10 +785,12 @@ local function showFileHistory()
   for _, entry in ipairs(history) do
     if entry.filePath then
       local filename = entry.filePath:match("([^/]+)$") or entry.filePath
-      local exists = hs.fs.attributes(entry.filePath) and "✅" or "❌"
+      local statusIcon = (entry.status == "failed" and "⚠️")
+        or (entry.status == "transcribing" and "⏳")
+        or (hs.fs.attributes(entry.filePath) and "✅" or "❌")
       local preview = truncateText(entry.text, 50)
       table.insert(choices, {
-        text = exists .. " " .. filename,
+        text = statusIcon .. " " .. filename,
         subText = entry.timestamp .. " | " .. preview,
         filePath = entry.filePath,
       })
@@ -809,12 +827,16 @@ local function toggleRecording()
 
     hs.alert.show(string.format("錄了 %s，轉譯中...", formatDuration(duration)), 1.5)
 
+    -- 離線優先：先存歷史紀錄，確保錄音檔不會遺失
+    addToHistory(nil, recordingFile, "transcribing")
+
     transcribe(recordingFile, function(text, err)
       if text then
-        addToHistory(text, recordingFile)
+        updateHistoryEntry(recordingFile, text, "done")
         pasteText(text)
         hs.alert.show("✅ 完成！", 1)
       else
+        updateHistoryEntry(recordingFile, nil, "failed")
         hs.alert.show("轉譯失敗: " .. (err or "未知錯誤"), 3)
       end
       state.currentRecordingFile = nil
