@@ -247,17 +247,19 @@ chmod 600 "$ENV_FILE"
 echo ""
 echo "🚀 啟動 Hammerspoon..."
 
-# 如果已經在執行，重新載入設定（加 timeout 避免卡住）
+# 如果已經在執行，重新載入設定
 if pgrep -x "Hammerspoon" > /dev/null; then
-    # 嘗試用 hs CLI 重新載入
     if command -v hs &> /dev/null; then
-        timeout 5 hs -c "hs.reload()" 2>/dev/null || true
+        hs -c "hs.reload()" 2>/dev/null &
     else
-        # 用 AppleScript 重新載入
-        timeout 5 osascript -e 'tell application "Hammerspoon" to reload config' 2>/dev/null || true
+        osascript -e 'tell application "Hammerspoon" to reload config' 2>/dev/null &
     fi
+    # 等最多 3 秒，不阻塞
+    sleep 1
+    echo -e "${GREEN}✅ Hammerspoon 已重新載入${NC}"
 else
     open -a Hammerspoon
+    echo -e "${GREEN}✅ Hammerspoon 已啟動${NC}"
 fi
 
 # ========================================
