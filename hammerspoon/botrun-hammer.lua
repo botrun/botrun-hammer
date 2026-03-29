@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.6.1 - Mac 語音轉文字
+  🔨 波特槌 v1.6.2 - Mac 語音轉文字
 
   由 Gemini API 驅動的語音輸入助手
 
@@ -23,7 +23,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.6.1"
+local VERSION = "1.6.2"
 
 -- 目前腳本檔案路徑（用於自動更新）
 local SCRIPT_PATH = debug.getinfo(1, "S").source:match("^@(.+)$")
