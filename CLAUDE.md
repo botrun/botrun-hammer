@@ -1,9 +1,9 @@
 ## 波特槌版本規則
 
-**當前版本: 1.6.0**
+**當前版本: 1.6.1**
 
 ### 永久規則
-每次修改 `hammerspoon/botrun-whisper.lua` 時，必須遞增版本號碼：
+每次修改 `hammerspoon/botrun-hammer.lua` 時，必須遞增版本號碼：
 1. 第 29 行的 `VERSION` 常數（所有版本顯示共用此常數）
 2. 檔案開頭註解的版本號
 

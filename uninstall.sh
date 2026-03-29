@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Botrun Whisper 解除安裝腳本
+# 波特槌 解除安裝腳本
 #
 
 set -e
@@ -16,10 +16,10 @@ NC='\033[0m'
 # 路徑
 HAMMERSPOON_DIR="$HOME/.hammerspoon"
 BOTRUN_DIR="$HOME/.botrun-hammer"
-RECORDINGS_DIR="$HOME/Documents/botrun-whisper-recordings"
+RECORDINGS_DIR="$HOME/Documents/botrun-hammer-recordings"
 
 echo ""
-echo -e "${BOLD}🗑️  Botrun Whisper 解除安裝${NC}"
+echo -e "${BOLD}🗑️  波特槌 解除安裝${NC}"
 echo -e "${CYAN}   將移除波特槌語音轉文字工具${NC}"
 echo ""
 
@@ -28,7 +28,7 @@ echo ""
 # ========================================
 
 if [[ -t 0 ]]; then
-    echo -e "${YELLOW}⚠️  即將解除安裝 Botrun Whisper，此操作無法復原${NC}"
+    echo -e "${YELLOW}⚠️  即將解除安裝 波特槌，此操作無法復原${NC}"
     echo ""
     read -p "確定要繼續嗎？(y/N) " -n 1 -r
     echo ""
@@ -47,12 +47,12 @@ fi
 
 echo "📝 移除 Lua 腳本..."
 
-if [[ -f "$HAMMERSPOON_DIR/botrun-whisper.lua" ]]; then
-    rm "$HAMMERSPOON_DIR/botrun-whisper.lua"
-    echo -e "${GREEN}✅ 已移除 botrun-whisper.lua${NC}"
-else
-    echo -e "${CYAN}   botrun-whisper.lua 不存在，跳過${NC}"
-fi
+for SCRIPT_NAME in "botrun-hammer.lua" "botrun-whisper.lua"; do
+    if [[ -f "$HAMMERSPOON_DIR/$SCRIPT_NAME" ]]; then
+        rm "$HAMMERSPOON_DIR/$SCRIPT_NAME"
+        echo -e "${GREEN}✅ 已移除 $SCRIPT_NAME${NC}"
+    fi
+done
 
 # 移除舊版腳本
 if [[ -f "$HAMMERSPOON_DIR/nchc-whisper.lua" ]]; then
@@ -70,9 +70,11 @@ if [[ -f "$HAMMERSPOON_DIR/init.lua" ]]; then
     # 建立備份
     cp "$HAMMERSPOON_DIR/init.lua" "$HAMMERSPOON_DIR/init.lua.bak"
 
-    # 移除 botrun-whisper 相關行
+    # 移除 botrun-hammer / botrun-whisper 相關行
+    sed -i '' '/require("botrun-hammer")/d' "$HAMMERSPOON_DIR/init.lua"
     sed -i '' '/require("botrun-whisper")/d' "$HAMMERSPOON_DIR/init.lua"
-    sed -i '' '/Botrun Whisper/d' "$HAMMERSPOON_DIR/init.lua"
+    sed -i '' '/波特槌/d' "$HAMMERSPOON_DIR/init.lua"
+    sed -i '' '/波特槌/d' "$HAMMERSPOON_DIR/init.lua"
 
     # 移除 nchc-whisper 相關行（舊版）
     sed -i '' '/require("nchc-whisper")/d' "$HAMMERSPOON_DIR/init.lua"
@@ -144,7 +146,7 @@ fi
 
 echo ""
 echo -e "${GREEN}═══════════════════════════════════════════${NC}"
-echo -e "${GREEN}✅ Botrun Whisper 已解除安裝${NC}"
+echo -e "${GREEN}✅ 波特槌 已解除安裝${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════${NC}"
 echo ""
 echo -e "${YELLOW}💡 提示：${NC}"

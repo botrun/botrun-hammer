@@ -189,7 +189,7 @@ NCHC_GENAI_API_KEY=你的NCHC_API_Key
 
 | 檔案 | 位置 |
 |------|------|
-| Lua 腳本 | `~/.hammerspoon/botrun-whisper.lua` |
+| Lua 腳本 | `~/.hammerspoon/botrun-hammer.lua` |
 | API Key 設定 | `~/.botrun-hammer/.env` |
 | Hammerspoon 設定 | `~/.hammerspoon/init.lua` |
 
@@ -205,14 +205,14 @@ NCHC_GENAI_API_KEY=你的NCHC_API_Key
 
 ```bash
 # 移除 Lua 腳本
-rm ~/.hammerspoon/botrun-whisper.lua
+rm ~/.hammerspoon/botrun-hammer.lua
 
 # 移除設定目錄（包含 API Key）
 rm -rf ~/.botrun-hammer
 
 # 編輯 init.lua 移除載入指令
 nano ~/.hammerspoon/init.lua
-# 刪除 require("botrun-whisper") 那行
+# 刪除 require("botrun-hammer") 那行
 ```
 
 ---

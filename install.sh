@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Botrun Whisper 安裝腳本
+# 波特槌 安裝腳本
 # Mac 語音轉文字工具（F5 快捷鍵）
 #
 # 使用方式：
@@ -25,7 +25,7 @@ BOTRUN_DIR="$HOME/.botrun-hammer"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo ""
-echo -e "${BOLD}🎤 Botrun Whisper 安裝程式${NC}"
+echo -e "${BOLD}🎤 波特槌 安裝程式${NC}"
 echo -e "${CYAN}   Mac 語音轉文字工具（F5 快捷鍵）${NC}"
 echo ""
 
@@ -114,37 +114,39 @@ mkdir -p "$HAMMERSPOON_DIR"
 echo "📝 部署 Lua 腳本..."
 
 # 判斷來源：本地安裝 or curl 安裝
-if [[ -f "$SCRIPT_DIR/hammerspoon/botrun-whisper.lua" ]]; then
+if [[ -f "$SCRIPT_DIR/hammerspoon/botrun-hammer.lua" ]]; then
     # 本地安裝
-    cp "$SCRIPT_DIR/hammerspoon/botrun-whisper.lua" "$HAMMERSPOON_DIR/botrun-whisper.lua"
+    cp "$SCRIPT_DIR/hammerspoon/botrun-hammer.lua" "$HAMMERSPOON_DIR/botrun-hammer.lua"
 else
     # curl 安裝，下載 Lua 腳本
-    curl -fsSL "https://raw.githubusercontent.com/botrun/botrun-hammer/main/hammerspoon/botrun-whisper.lua" \
-        -o "$HAMMERSPOON_DIR/botrun-whisper.lua"
+    curl -fsSL "https://raw.githubusercontent.com/botrun/botrun-hammer/main/hammerspoon/botrun-hammer.lua" \
+        -o "$HAMMERSPOON_DIR/botrun-hammer.lua"
 fi
 
 echo -e "${GREEN}✅ Lua 腳本已部署${NC}"
 
 # ========================================
-# 清除舊版 nchc-whisper.lua（如果存在）
+# 清除舊版腳本（如果存在）
 # ========================================
 
-OLD_SCRIPT="$HAMMERSPOON_DIR/nchc-whisper.lua"
-if [[ -f "$OLD_SCRIPT" ]]; then
-    echo "🧹 清除舊版 nchc-whisper.lua..."
-    rm -f "$OLD_SCRIPT"
-    echo -e "${GREEN}✅ 已移除舊版 nchc-whisper.lua${NC}"
-fi
-
-# 從 init.lua 移除舊的 require("nchc-whisper")
-if [[ -f "$HAMMERSPOON_DIR/init.lua" ]]; then
-    if grep -q 'require("nchc-whisper")' "$HAMMERSPOON_DIR/init.lua"; then
-        echo "🧹 從 init.lua 移除舊的 nchc-whisper 引用..."
-        sed -i '' '/require("nchc-whisper")/d' "$HAMMERSPOON_DIR/init.lua"
-        # 也移除相關的註解行
-        sed -i '' '/-- .*nchc-whisper/d' "$HAMMERSPOON_DIR/init.lua"
-        echo -e "${GREEN}✅ 已清除舊版引用${NC}"
+for OLD_SCRIPT in "$HAMMERSPOON_DIR/nchc-whisper.lua" "$HAMMERSPOON_DIR/botrun-whisper.lua"; do
+    if [[ -f "$OLD_SCRIPT" ]]; then
+        echo "🧹 清除舊版 $(basename "$OLD_SCRIPT")..."
+        rm -f "$OLD_SCRIPT"
+        echo -e "${GREEN}✅ 已移除 $(basename "$OLD_SCRIPT")${NC}"
     fi
+done
+
+# 從 init.lua 移除舊的 require 引用
+if [[ -f "$HAMMERSPOON_DIR/init.lua" ]]; then
+    for OLD_REQ in "nchc-whisper" "botrun-whisper"; do
+        if grep -q "require(\"$OLD_REQ\")" "$HAMMERSPOON_DIR/init.lua"; then
+            echo "🧹 從 init.lua 移除舊的 $OLD_REQ 引用..."
+            sed -i '' "/require(\"$OLD_REQ\")/d" "$HAMMERSPOON_DIR/init.lua"
+            sed -i '' "/-- .*$OLD_REQ/d" "$HAMMERSPOON_DIR/init.lua"
+            echo -e "${GREEN}✅ 已清除舊版引用${NC}"
+        fi
+    done
 fi
 
 # ========================================
@@ -154,12 +156,12 @@ fi
 echo "📝 更新 Hammerspoon 設定..."
 
 INIT_FILE="$HAMMERSPOON_DIR/init.lua"
-REQUIRE_LINE='require("botrun-whisper")'
-COMMENT_LINE='-- Botrun Whisper 語音轉文字 (F5)'
+REQUIRE_LINE='require("botrun-hammer")'
+COMMENT_LINE='-- 波特槌 語音轉文字 (F5)'
 
 if [[ -f "$INIT_FILE" ]]; then
     if grep -q "$REQUIRE_LINE" "$INIT_FILE"; then
-        echo -e "${GREEN}✅ init.lua 已包含 Botrun Whisper${NC}"
+        echo -e "${GREEN}✅ init.lua 已包含 波特槌${NC}"
     else
         echo "" >> "$INIT_FILE"
         echo "$COMMENT_LINE" >> "$INIT_FILE"
@@ -184,20 +186,14 @@ fi
 ENV_FILE="$BOTRUN_DIR/.env"
 
 echo ""
-echo -e "${BOLD}🔑 設定 API Keys${NC}"
+echo -e "${BOLD}🔑 設定 Gemini API Key${NC}"
 echo ""
-echo -e "${CYAN}Gemini 是主要 API，NCHC 是備用 API${NC}"
-echo -e "${CYAN}Gemini is the primary API, NCHC is the backup API${NC}"
 
 # 初始化 .env 檔案（如果不存在）
 if [[ ! -f "$ENV_FILE" ]]; then
     touch "$ENV_FILE"
     chmod 600 "$ENV_FILE"
 fi
-
-# --- Gemini API Key（主要 / Primary） ---
-echo ""
-echo -e "${BOLD}[1/2] Gemini API Key（主要 / Primary）${NC}"
 
 if grep -q "GEMINI_API_KEY" "$ENV_FILE" 2>/dev/null && ! grep -q "GEMINI_API_KEY=你的" "$ENV_FILE" 2>/dev/null; then
     echo -e "${GREEN}✅ Gemini API Key 已設定${NC}"
@@ -212,7 +208,7 @@ elif [[ -n "$GEMINI_API_KEY" ]]; then
 elif [[ -t 0 ]]; then
     echo ""
     echo "請輸入你的 Gemini API Key / Enter your Gemini API Key"
-    echo -e "${CYAN}（申請網址 / Get key: https://aistudio.google.com/apikey）${NC}"
+    echo -e "${CYAN}（免費申請 / Get free key: https://aistudio.google.com/apikey）${NC}"
     echo ""
     read -p "Gemini API Key: " GEMINI_KEY_INPUT
 
@@ -224,58 +220,22 @@ elif [[ -t 0 ]]; then
         fi
         echo -e "${GREEN}✅ Gemini API Key 已儲存${NC}"
     else
-        echo -e "${YELLOW}⚠️ 未設定 Gemini API Key，稍後請手動編輯 $ENV_FILE${NC}"
+        echo -e "${YELLOW}⚠️ 未設定 Gemini API Key，稍後請手動編輯：${NC}"
+        echo -e "${YELLOW}   vi $ENV_FILE${NC}"
         if ! grep -q "GEMINI_API_KEY" "$ENV_FILE" 2>/dev/null; then
             echo "GEMINI_API_KEY=你的Gemini_API_Key" >> "$ENV_FILE"
         fi
     fi
 else
-    echo -e "${YELLOW}⚠️ 非互動模式，跳過 Gemini API Key 設定${NC}"
+    echo -e "${YELLOW}⚠️ 非互動模式，跳過 API Key 設定${NC}"
     if ! grep -q "GEMINI_API_KEY" "$ENV_FILE" 2>/dev/null; then
         echo "GEMINI_API_KEY=你的Gemini_API_Key" >> "$ENV_FILE"
     fi
 fi
 
-# --- NCHC API Key（備用 / Backup） ---
-echo ""
-echo -e "${BOLD}[2/2] NCHC GenAI API Key（備用 / Backup）${NC}"
-
-if grep -q "NCHC_GENAI_API_KEY" "$ENV_FILE" 2>/dev/null && ! grep -q "NCHC_GENAI_API_KEY=你的" "$ENV_FILE" 2>/dev/null; then
-    echo -e "${GREEN}✅ NCHC API Key 已設定${NC}"
-elif [[ -n "$NCHC_GENAI_API_KEY" ]]; then
-    if grep -q "NCHC_GENAI_API_KEY" "$ENV_FILE" 2>/dev/null; then
-        sed -i '' "s|^NCHC_GENAI_API_KEY=.*|NCHC_GENAI_API_KEY=$NCHC_GENAI_API_KEY|" "$ENV_FILE"
-    else
-        echo "NCHC_GENAI_API_KEY=$NCHC_GENAI_API_KEY" >> "$ENV_FILE"
-    fi
-    echo -e "${GREEN}✅ NCHC API Key 已從環境變數設定${NC}"
-elif [[ -t 0 ]]; then
-    echo ""
-    echo "請輸入你的 NCHC GenAI API Key（可選，按 Enter 跳過）"
-    echo "Enter your NCHC GenAI API Key (optional, press Enter to skip)"
-    echo -e "${CYAN}（申請網址 / Get key: https://portal.genai.nchc.org.tw/）${NC}"
-    echo ""
-    read -p "NCHC API Key: " NCHC_KEY_INPUT
-
-    if [[ -n "$NCHC_KEY_INPUT" ]]; then
-        if grep -q "NCHC_GENAI_API_KEY" "$ENV_FILE" 2>/dev/null; then
-            sed -i '' "s|^NCHC_GENAI_API_KEY=.*|NCHC_GENAI_API_KEY=$NCHC_KEY_INPUT|" "$ENV_FILE"
-        else
-            echo "NCHC_GENAI_API_KEY=$NCHC_KEY_INPUT" >> "$ENV_FILE"
-        fi
-        echo -e "${GREEN}✅ NCHC API Key 已儲存${NC}"
-    else
-        echo -e "${YELLOW}⚠️ 未設定 NCHC API Key（備用 API 將不可用）${NC}"
-        if ! grep -q "NCHC_GENAI_API_KEY" "$ENV_FILE" 2>/dev/null; then
-            echo "NCHC_GENAI_API_KEY=你的NCHC_API_Key" >> "$ENV_FILE"
-        fi
-    fi
-else
-    echo -e "${YELLOW}⚠️ 非互動模式，跳過 API Key 設定${NC}"
-    echo -e "${YELLOW}   請稍後執行 / Edit later: vi $ENV_FILE${NC}"
-    if ! grep -q "NCHC_GENAI_API_KEY" "$ENV_FILE" 2>/dev/null; then
-        echo "NCHC_GENAI_API_KEY=你的NCHC_API_Key" >> "$ENV_FILE"
-    fi
+# 移除舊版 NCHC key（如果存在）
+if grep -q "NCHC_GENAI_API_KEY" "$ENV_FILE" 2>/dev/null; then
+    sed -i '' '/^NCHC_GENAI_API_KEY/d' "$ENV_FILE"
 fi
 
 chmod 600 "$ENV_FILE"
@@ -306,7 +266,7 @@ fi
 
 echo ""
 echo -e "${GREEN}═══════════════════════════════════════════${NC}"
-echo -e "${GREEN}✅ Botrun Whisper 安裝完成！${NC}"
+echo -e "${GREEN}✅ 波特槌 安裝完成！${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════${NC}"
 echo ""
 echo -e "${BOLD}使用方式：${NC}"
@@ -318,6 +278,14 @@ echo -e "${CYAN}轉錄結果會自動貼到游標位置${NC}"
 echo ""
 echo -e "${YELLOW}💡 提示：${NC}"
 echo "   • 開機會自動啟動 Hammerspoon（選單列 🔨 圖示）"
-echo "   • API Key 設定檔：$ENV_FILE"
 echo "   • 首次使用需授權 Accessibility 權限"
+echo ""
+echo -e "${BOLD}📋 API Key 設定檔位置：${NC}"
+echo ""
+echo -e "   ${CYAN}$ENV_FILE${NC}"
+echo ""
+echo -e "   內容格式："
+echo -e "   ${GREEN}GEMINI_API_KEY=你的Key${NC}"
+echo ""
+echo -e "   免費申請：${CYAN}https://aistudio.google.com/apikey${NC}"
 echo ""

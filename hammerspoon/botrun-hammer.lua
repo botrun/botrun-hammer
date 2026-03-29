@@ -1,13 +1,11 @@
 --[[
-  🔨 波特槌 v1.6.0 - Mac 語音轉文字
+  🔨 波特槌 v1.6.1 - Mac 語音轉文字
 
   由 Gemini API 驅動的語音輸入助手
-  備案：NCHC Whisper API（Gemini 故障時自動切換）
 
   功能：
   - F5 開始/停止錄音
   - 自動呼叫 Gemini API 轉錄
-  - Gemini 失敗時自動切換 NCHC Whisper API
   - 轉錄文字貼到游標位置
   - 再按 F5 停止錄音
   - F6 瀏覽最近 30 筆轉錄文字歷史（選擇後複製到剪貼簿）
@@ -22,33 +20,29 @@
   - ffmpeg (brew install ffmpeg)
   - jq (brew install jq)
   - GEMINI_API_KEY 環境變數
-  - NCHC_GENAI_API_KEY 環境變數（備案用）
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.6.0"
+local VERSION = "1.6.1"
 
 -- 目前腳本檔案路徑（用於自動更新）
 local SCRIPT_PATH = debug.getinfo(1, "S").source:match("^@(.+)$")
-  or (os.getenv("HOME") .. "/.hammerspoon/botrun-whisper.lua")
+  or (os.getenv("HOME") .. "/.hammerspoon/botrun-hammer.lua")
 
 -- ========================================
 -- 設定
 -- ========================================
 
 local config = {
-  -- NCHC API（主要）
-  nchcApiUrl = "https://portal.genai.nchc.org.tw/api/v1/audio/transcriptions",
-  nchcModel = "Whisper-Large-V3",
   language = "zh",
 
-  -- Gemini API（備案）
+  -- Gemini API
   geminiApiUrl = "https://generativelanguage.googleapis.com/v1beta",
   geminiModel = "gemini-3-flash-preview",
   geminiUploadUrl = "https://generativelanguage.googleapis.com/upload/v1beta/files",
 
   -- 錄音設定
-  recordingDir = os.getenv("HOME") .. "/Documents/botrun-whisper-recordings",
+  recordingDir = os.getenv("HOME") .. "/Documents/botrun-hammer-recordings",
   sampleRate = 16000,
   channels = 1,
   audioBitrate = "64k",  -- AAC 位元率
@@ -66,13 +60,13 @@ local config = {
   historyFileKey = "F7",
 
   -- 歷史紀錄
-  historyFile = os.getenv("HOME") .. "/Documents/botrun-whisper-recordings/history.json",
+  historyFile = os.getenv("HOME") .. "/Documents/botrun-hammer-recordings/history.json",
   maxHistory = 30,
 
   -- 自動更新
   autoUpdate = {
     enabled = true,
-    githubRawUrl = "https://raw.githubusercontent.com/botrun/botrun-hammer/main/hammerspoon/botrun-whisper.lua",
+    githubRawUrl = "https://raw.githubusercontent.com/botrun/botrun-hammer/main/hammerspoon/botrun-hammer.lua",
     checkInterval = 4 * 60 * 60,  -- 每 4 小時檢查一次
     startupDelay = 10,            -- 啟動後 10 秒開始第一次檢查
   },
@@ -130,11 +124,6 @@ local function getEnvKey(keyName)
   end
 
   return nil
-end
-
--- 取得 NCHC API Key
-local function getNchcApiKey()
-  return getEnvKey("NCHC_GENAI_API_KEY")
 end
 
 -- 取得 Gemini API Key
@@ -485,54 +474,6 @@ end
 -- API 呼叫
 -- ========================================
 
--- 呼叫 NCHC Whisper API
-local function transcribeWithNCHC(recordingFile, callback)
-  local apiKey = getNchcApiKey()
-
-  if not apiKey then
-    callback(nil, "NCHC API Key 未設定")
-    return
-  end
-
-  -- 使用 curl 呼叫 API
-  local curlCmd = string.format([[
-    curl -s -X POST "%s" \
-      -H "Authorization: Bearer %s" \
-      -H "Accept: application/json" \
-      -F "file=@%s" \
-      -F "model=%s" \
-      -F "language=%s" \
-      -F "response_format=json"
-  ]], config.nchcApiUrl, apiKey, recordingFile, config.nchcModel, config.language)
-
-  hs.task.new("/bin/bash", function(exitCode, stdout, stderr)
-    if exitCode ~= 0 then
-      callback(nil, "NCHC 連線失敗: " .. (stderr or ""))
-      return
-    end
-
-    -- 檢查是否有錯誤回應
-    if stdout:find('"status"%s*:%s*"error"') or stdout:find("Upstream Service Error") then
-      callback(nil, "NCHC 服務異常: " .. stdout)
-      return
-    end
-
-    -- 解析 JSON 回應
-    local jqPath = getJqPath()
-    local parseTask = hs.task.new("/bin/bash", function(_, jsonOut, _)
-      local text = jsonOut:gsub("^%s*(.-)%s*$", "%1")  -- trim
-
-      if text and text ~= "" and text ~= "null" then
-        callback(text, nil)
-      else
-        callback(nil, "NCHC 無法解析回應: " .. stdout)
-      end
-    end, {"-c", "echo '" .. stdout:gsub("'", "'\\''") .. "' | " .. jqPath .. " -r '.text // empty'"})
-    parseTask:start()
-
-  end, {"-c", curlCmd})
-  :start()
-end
 
 -- 呼叫 Gemini API（備案）
 local function transcribeWithGemini(recordingFile, callback)
@@ -647,7 +588,7 @@ local function stopTranscribeAnimation()
   end
 end
 
--- 主要轉錄函數（自動 Failover：Gemini 優先，NCHC 備用）
+-- 主要轉錄函數（Gemini API）
 local function transcribe(recordingFile, callback)
   -- 檢查檔案是否存在
   if not recordingFile or not hs.fs.attributes(recordingFile) then
@@ -659,10 +600,8 @@ local function transcribe(recordingFile, callback)
   -- 啟動轉錄動畫
   startTranscribeAnimation()
 
-  -- 先嘗試 Gemini API（失敗會自動 retry 一次，再失敗才切 NCHC）
   local function onGeminiResult(text, err, isRetry)
     if text then
-      -- Gemini 成功
       stopTranscribeAnimation()
       if not config.keepSuccessfulRecordings then
         os.remove(recordingFile)
@@ -671,7 +610,7 @@ local function transcribe(recordingFile, callback)
         callback(traditionalText, nil)
       end)
     elseif not isRetry then
-      -- Gemini 第一次失敗，retry 一次
+      -- 第一次失敗，retry 一次
       print("[波特槌] Gemini 第一次失敗: " .. (err or "未知錯誤") .. "，重試一次...")
       hs.alert.show("⚠️ Gemini 暫時故障，重試中...", 1.5)
       hs.timer.doAfter(1, function()
@@ -680,26 +619,10 @@ local function transcribe(recordingFile, callback)
         end)
       end)
     else
-      -- Gemini retry 也失敗，切換 NCHC 備案
-      print("[波特槌] Gemini 重試也失敗: " .. (err or "未知錯誤") .. "，切換到 NCHC")
-      hs.alert.show("⚠️ Gemini 故障，切換 NCHC...", 1.5)
-
-      transcribeWithNCHC(recordingFile, function(nchcText, nchcErr)
-        stopTranscribeAnimation()
-        if nchcText then
-          -- NCHC 成功
-          if not config.keepSuccessfulRecordings then
-            os.remove(recordingFile)
-          end
-          convertToTraditional(nchcText, function(traditionalText)
-            callback(traditionalText, nil)
-          end)
-        else
-          -- 全部都失敗
-          hs.alert.show("❌ 轉錄失敗\n錄音已保留: " .. recordingFile:match("([^/]+)$"), 3)
-          callback(nil, "Gemini（含重試）和 NCHC 都失敗")
-        end
-      end)
+      -- 重試也失敗
+      stopTranscribeAnimation()
+      hs.alert.show("❌ 轉錄失敗\n錄音已保留: " .. recordingFile:match("([^/]+)$"), 3)
+      callback(nil, "Gemini 轉錄失敗（含重試）")
     end
   end
 
@@ -971,12 +894,8 @@ local function checkDependencies()
   local issues = {}
   local warnings = {}
 
-  if not getNchcApiKey() then
-    table.insert(issues, "NCHC_GENAI_API_KEY 未設定")
-  end
-
   if not getGeminiApiKey() then
-    table.insert(warnings, "GEMINI_API_KEY 未設定（備案不可用）")
+    table.insert(issues, "GEMINI_API_KEY 未設定，請編輯 ~/.botrun-hammer/.env")
   end
 
   local ffmpegPath = getFFmpegPath()
@@ -1004,4 +923,4 @@ checkDependencies()
 -- 啟動自動更新
 startAutoUpdate()
 
-print("[🔨 波特槌 v" .. VERSION .. "] 模組已載入（Gemini 主要，NCHC 備案｜F6 文字歷史｜F7 檔案歷史｜自動更新）")
+print("[🔨 波特槌 v" .. VERSION .. "] 模組已載入（Gemini API｜F6 文字歷史｜F7 檔案歷史｜自動更新）")
