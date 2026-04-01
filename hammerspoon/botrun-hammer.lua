@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.6.3 - Mac 語音轉文字
+  🔨 波特槌 v1.6.4 - Mac 語音轉文字
 
   由 Gemini API 驅動的語音輸入助手
 
@@ -8,6 +8,7 @@
   - 自動呼叫 Gemini API 轉錄
   - 轉錄文字貼到游標位置
   - 再按 F5 停止錄音
+  - 轉錄中按 ESC 或 F5 可取消轉錄（錄音檔保留）
   - F6 瀏覽最近 30 筆轉錄文字歷史（選擇後複製到剪貼簿）
   - F7 瀏覽最近 30 個錄音檔案（選擇後在 Finder 顯示）
   - 自動更新：啟動時及每 4 小時檢查 GitHub 最新版本
@@ -23,7 +24,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.6.3"
+local VERSION = "1.6.4"
 
 -- 目前腳本檔案路徑（用於自動更新）
 local SCRIPT_PATH = debug.getinfo(1, "S").source:match("^@(.+)$")
@@ -83,6 +84,10 @@ local state = {
   currentRecordingFile = nil,  -- 目前錄音檔案路徑
   transcribeTimer = nil,       -- 轉錄動畫 timer
   transcribeEmojiIndex = 1,    -- 目前 emoji 索引
+  isTranscribing = false,      -- 是否正在轉錄
+  transcribeTask = nil,        -- 轉錄 hs.task（可中斷）
+  transcribeFile = nil,        -- 正在轉錄的檔案路徑
+  cancelHotkey = nil,          -- ESC 取消熱鍵（轉錄時綁定）
 }
 
 -- 轉錄中動畫 emoji 列表
@@ -253,7 +258,7 @@ local function saveHistory(history)
 end
 
 -- 新增一筆歷史紀錄（KISS: 簡單的 FIFO 佇列）
--- status: "transcribing" | "done" | "failed"（向下相容：無 status 視為 done）
+-- status: "transcribing" | "done" | "failed" | "cancelled"（向下相容：無 status 視為 done）
 local function addToHistory(text, filePath, status)
   local history = loadHistory()
   local entry = {
@@ -544,7 +549,7 @@ local function transcribeWithGemini(recordingFile, callback)
       }'
   ]], apiKey, recordingFile, config.geminiUploadUrl, jqPath, config.geminiApiUrl, config.geminiModel)
 
-  hs.task.new("/bin/bash", function(exitCode, stdout, stderr)
+  local task = hs.task.new("/bin/bash", function(exitCode, stdout, stderr)
     if exitCode ~= 0 then
       callback(nil, "Gemini 連線失敗: " .. (stderr or ""))
       return
@@ -563,7 +568,8 @@ local function transcribeWithGemini(recordingFile, callback)
     parseTask:start()
 
   end, {"-c", geminiCmd})
-  :start()
+  state.transcribeTask = task
+  task:start()
 end
 
 -- 轉錄動畫控制
@@ -586,6 +592,51 @@ local function stopTranscribeAnimation()
   end
 end
 
+-- 解除 ESC 取消熱鍵
+local function unbindCancelHotkey()
+  if state.cancelHotkey then
+    state.cancelHotkey:delete()
+    state.cancelHotkey = nil
+  end
+end
+
+-- 取消轉錄
+local function cancelTranscription()
+  if not state.isTranscribing then return end
+
+  print("[波特槌] 使用者取消轉錄")
+
+  -- 終止轉錄任務
+  if state.transcribeTask then
+    state.transcribeTask:terminate()
+    state.transcribeTask = nil
+  end
+
+  -- 停止動畫
+  stopTranscribeAnimation()
+
+  -- 更新歷史紀錄為 cancelled（錄音檔保留）
+  if state.transcribeFile then
+    updateHistoryEntry(state.transcribeFile, nil, "cancelled")
+    local filename = state.transcribeFile:match("([^/]+)$")
+    hs.alert.show("🚫 已取消轉錄\n錄音已保留: " .. filename, 2.5)
+  else
+    hs.alert.show("🚫 已取消轉錄", 2)
+  end
+
+  -- 清除狀態
+  state.isTranscribing = false
+  state.transcribeFile = nil
+  state.currentRecordingFile = nil
+  unbindCancelHotkey()
+end
+
+-- 綁定 ESC 為轉錄取消鍵（僅轉錄中有效）
+local function bindCancelHotkey()
+  unbindCancelHotkey()  -- 確保不重複綁定
+  state.cancelHotkey = hs.hotkey.bind({}, "escape", cancelTranscription)
+end
+
 -- 主要轉錄函數（Gemini API）
 local function transcribe(recordingFile, callback)
   -- 檢查檔案是否存在
@@ -595,12 +646,29 @@ local function transcribe(recordingFile, callback)
     return
   end
 
+  -- 設定轉錄狀態
+  state.isTranscribing = true
+  state.transcribeFile = recordingFile
+  bindCancelHotkey()
+
   -- 啟動轉錄動畫
   startTranscribeAnimation()
 
+  -- 轉錄結束清理（成功/失敗都需要）
+  local function finishTranscription()
+    state.isTranscribing = false
+    state.transcribeFile = nil
+    state.transcribeTask = nil
+    unbindCancelHotkey()
+  end
+
   local function onGeminiResult(text, err, isRetry)
+    -- 已被取消，忽略回調
+    if not state.isTranscribing then return end
+
     if text then
       stopTranscribeAnimation()
+      finishTranscription()
       if not config.keepSuccessfulRecordings then
         os.remove(recordingFile)
       end
@@ -612,6 +680,7 @@ local function transcribe(recordingFile, callback)
       print("[波特槌] Gemini 第一次失敗: " .. (err or "未知錯誤") .. "，重試一次...")
       hs.alert.show("⚠️ Gemini 暫時故障，重試中...", 1.5)
       hs.timer.doAfter(1, function()
+        if not state.isTranscribing then return end  -- 已取消則不重試
         transcribeWithGemini(recordingFile, function(retryText, retryErr)
           onGeminiResult(retryText, retryErr, true)
         end)
@@ -619,6 +688,7 @@ local function transcribe(recordingFile, callback)
     else
       -- 重試也失敗
       stopTranscribeAnimation()
+      finishTranscription()
       hs.alert.show("❌ 轉錄失敗\n錄音已保留: " .. recordingFile:match("([^/]+)$"), 3)
       callback(nil, "Gemini 轉錄失敗（含重試）")
     end
@@ -707,6 +777,7 @@ local function showFileHistory()
     if entry.filePath then
       local filename = entry.filePath:match("([^/]+)$") or entry.filePath
       local statusIcon = (entry.status == "failed" and "⚠️")
+        or (entry.status == "cancelled" and "🚫")
         or (entry.status == "transcribing" and "⏳")
         or (hs.fs.attributes(entry.filePath) and "✅" or "❌")
       local preview = truncateText(entry.text, 50)
@@ -730,6 +801,12 @@ end
 -- ========================================
 
 local function toggleRecording()
+  if state.isTranscribing then
+    -- 轉錄中按 F5 = 取消轉錄
+    cancelTranscription()
+    return
+  end
+
   if not state.isRecording then
     -- 開始錄音
     startRecording()
@@ -885,7 +962,7 @@ end
 -- 初始化
 -- ========================================
 
-hs.alert.show("🔨 波特槌 v" .. VERSION .. " 已啟動\n🎤 F5 語音輸入 | F6 文字歷史 | F7 檔案歷史", 3)
+hs.alert.show("🔨 波特槌 v" .. VERSION .. " 已啟動\n🎤 F5 語音輸入 | F6 文字歷史 | F7 檔案歷史\n⎋ ESC 取消轉錄", 3)
 
 -- 檢查依賴
 local function checkDependencies()
