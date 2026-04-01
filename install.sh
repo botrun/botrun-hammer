@@ -22,7 +22,7 @@ NC='\033[0m' # No Color
 # 路徑
 HAMMERSPOON_DIR="$HOME/.hammerspoon"
 BOTRUN_DIR="$HOME/.botrun-hammer"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" 2>/dev/null)" 2>/dev/null && pwd 2>/dev/null || echo "")"
 
 echo ""
 echo -e "${BOLD}🎤 波特槌 安裝程式${NC}"
@@ -47,7 +47,8 @@ echo "🔍 檢查 Homebrew..."
 if ! command -v brew &> /dev/null; then
     echo -e "${YELLOW}⚠️ Homebrew 未安裝${NC}"
     echo "正在安裝 Homebrew..."
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    # 重點修正：隔離 stdin，避免 curl|bash 模式下被吃掉
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" < /dev/null
 
     # 設定 PATH（Apple Silicon）
     if [[ -f "/opt/homebrew/bin/brew" ]]; then
@@ -63,13 +64,8 @@ echo -e "${GREEN}✅ Homebrew 已安裝${NC}"
 echo "🔍 檢查 Hammerspoon..."
 if [[ ! -d "/Applications/Hammerspoon.app" && ! -d "$HOME/Applications/Hammerspoon.app" ]]; then
     echo "⚠️ Hammerspoon 未安裝，正在安裝..."
-    brew install --cask hammerspoon
-
-    echo ""
-    echo -e "${YELLOW}⚠️ 重要：首次使用需要授權 Accessibility 權限${NC}"
-    echo "   1. 開啟「系統設定」→「隱私權與安全性」→「輔助使用」"
-    echo "   2. 將 Hammerspoon 加入並打勾"
-    echo ""
+    brew install --cask hammerspoon < /dev/null
+    NEED_ACCESSIBILITY=1
 fi
 echo -e "${GREEN}✅ Hammerspoon 已安裝${NC}"
 
@@ -80,21 +76,21 @@ echo -e "${GREEN}✅ Hammerspoon 已安裝${NC}"
 echo "🔍 檢查 ffmpeg（音訊處理工具）..."
 if ! command -v ffmpeg &> /dev/null; then
     echo "⚠️ ffmpeg 未安裝，正在安裝..."
-    brew install ffmpeg
+    brew install ffmpeg < /dev/null
 fi
 echo -e "${GREEN}✅ ffmpeg 已安裝${NC}"
 
 echo "🔍 檢查 jq（JSON 解析）..."
 if ! command -v jq &> /dev/null; then
     echo "⚠️ jq 未安裝，正在安裝..."
-    brew install jq
+    brew install jq < /dev/null
 fi
 echo -e "${GREEN}✅ jq 已安裝${NC}"
 
 echo "🔍 檢查 opencc（簡繁轉換，可選）..."
 if ! command -v opencc &> /dev/null; then
     echo "⚠️ opencc 未安裝，正在安裝..."
-    brew install opencc
+    brew install opencc < /dev/null
 fi
 echo -e "${GREEN}✅ opencc 已安裝${NC}"
 
@@ -114,7 +110,7 @@ mkdir -p "$HAMMERSPOON_DIR"
 echo "📝 部署 Lua 腳本..."
 
 # 判斷來源：本地安裝 or curl 安裝
-if [[ -f "$SCRIPT_DIR/hammerspoon/botrun-hammer.lua" ]]; then
+if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/hammerspoon/botrun-hammer.lua" ]]; then
     # 本地安裝
     cp "$SCRIPT_DIR/hammerspoon/botrun-hammer.lua" "$HAMMERSPOON_DIR/botrun-hammer.lua"
 else
@@ -210,7 +206,7 @@ elif [[ -t 0 ]]; then
     echo "請輸入你的 Gemini API Key / Enter your Gemini API Key"
     echo -e "${CYAN}（免費申請 / Get free key: https://aistudio.google.com/apikey）${NC}"
     echo ""
-    read -p "Gemini API Key: " GEMINI_KEY_INPUT
+    read -p "Gemini API Key: " GEMINI_KEY_INPUT < /dev/tty
 
     if [[ -n "$GEMINI_KEY_INPUT" ]]; then
         if grep -q "GEMINI_API_KEY" "$ENV_FILE" 2>/dev/null; then
@@ -265,6 +261,29 @@ fi
 # ========================================
 # 完成
 # ========================================
+
+# ========================================
+# Accessibility 權限引導
+# ========================================
+
+if [[ "${NEED_ACCESSIBILITY:-}" == "1" ]]; then
+    echo ""
+    echo -e "${YELLOW}════════════════════════════════════════════════════════════${NC}"
+    echo -e "${YELLOW}⚠️  重要：需要授權「輔助使用」權限${NC}"
+    echo -e "${YELLOW}════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    echo -e "   Hammerspoon 需要「輔助使用」權限才能："
+    echo -e "   • 偵測 F5/F6/F7 快捷鍵"
+    echo -e "   • 轉錄完成後自動貼上文字"
+    echo ""
+    echo -e "${BOLD}   請在彈出的設定視窗中：${NC}"
+    echo -e "   1. 找到 ${BOLD}Hammerspoon${NC}"
+    echo -e "   2. ${BOLD}打開開關${NC}（切換為藍色）"
+    echo ""
+    echo -e "${CYAN}   正在開啟系統設定...${NC}"
+    open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" 2>/dev/null || true
+    echo ""
+fi
 
 echo ""
 echo -e "${GREEN}═══════════════════════════════════════════${NC}"

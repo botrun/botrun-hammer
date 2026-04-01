@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.6.4 - Mac 語音轉文字
+  🔨 波特槌 v1.6.5 - Mac 語音轉文字
 
   由 Gemini API 驅動的語音輸入助手
 
@@ -24,7 +24,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.6.4"
+local VERSION = "1.6.5"
 
 -- 目前腳本檔案路徑（用於自動更新）
 local SCRIPT_PATH = debug.getinfo(1, "S").source:match("^@(.+)$")
@@ -963,6 +963,22 @@ end
 -- ========================================
 
 hs.alert.show("🔨 波特槌 v" .. VERSION .. " 已啟動\n🎤 F5 語音輸入 | F6 文字歷史 | F7 檔案歷史\n⎋ ESC 取消轉錄", 3)
+
+-- 檢查 Accessibility 權限
+local function checkAccessibility()
+  if not hs.accessibilityState() then
+    hs.timer.doAfter(1, function()
+      hs.alert.show("⚠️ 波特槌需要「輔助使用」權限\n請在系統設定中開啟 Hammerspoon 的權限", 5)
+      hs.timer.doAfter(2, function()
+        hs.execute("open 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'")
+      end)
+    end)
+    return false
+  end
+  return true
+end
+
+checkAccessibility()
 
 -- 檢查依賴
 local function checkDependencies()
