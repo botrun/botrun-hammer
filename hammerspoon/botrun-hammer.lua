@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.6.5 - Mac 語音轉文字
+  🔨 波特槌 v1.6.6 - Mac 語音轉文字
 
   由 Gemini API 驅動的語音輸入助手
 
@@ -24,7 +24,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.6.5"
+local VERSION = "1.6.6"
 
 -- 目前腳本檔案路徑（用於自動更新）
 local SCRIPT_PATH = debug.getinfo(1, "S").source:match("^@(.+)$")
@@ -43,10 +43,13 @@ local config = {
   geminiUploadUrl = "https://generativelanguage.googleapis.com/upload/v1beta/files",
 
   -- 錄音設定
-  recordingDir = os.getenv("HOME") .. "/Documents/botrun-hammer-recordings",
+  -- v1.6.6: 改用 Application Support 避開 iCloud Drive Documents 同步干擾（否則長錄音可能被搬離本地）
+  recordingDir = os.getenv("HOME") .. "/Library/Application Support/botrun-hammer/recordings",
+  legacyRecordingDir = os.getenv("HOME") .. "/Documents/botrun-hammer-recordings",  -- 舊路徑（用於 migration）
   sampleRate = 16000,
   channels = 1,
   audioBitrate = "64k",  -- AAC 位元率
+  fragDurationUs = 1000000,  -- fMP4 fragment 長度（微秒）；1 秒一顆 moof，斷電最多只遺失 1 秒
 
   -- ffmpeg 路徑（Homebrew）
   ffmpegPath = "/opt/homebrew/bin/ffmpeg",
@@ -61,7 +64,7 @@ local config = {
   historyFileKey = "F7",
 
   -- 歷史紀錄
-  historyFile = os.getenv("HOME") .. "/Documents/botrun-hammer-recordings/history.json",
+  historyFile = os.getenv("HOME") .. "/Library/Application Support/botrun-hammer/recordings/history.json",
   maxHistory = 30,
 
   -- 自動更新
@@ -82,12 +85,15 @@ local state = {
   recordingTask = nil,
   startTime = nil,
   currentRecordingFile = nil,  -- 目前錄音檔案路徑
+  currentStderrLog = nil,      -- 目前錄音的 ffmpeg stderr 日誌檔
   transcribeTimer = nil,       -- 轉錄動畫 timer
   transcribeEmojiIndex = 1,    -- 目前 emoji 索引
   isTranscribing = false,      -- 是否正在轉錄
   transcribeTask = nil,        -- 轉錄 hs.task（可中斷）
   transcribeFile = nil,        -- 正在轉錄的檔案路徑
   cancelHotkey = nil,          -- ESC 取消熱鍵（轉錄時綁定）
+  caffeinateDisplay = false,   -- 錄音期間防顯示器睡眠旗標
+  caffeinateSystem = false,    -- 錄音期間防系統睡眠旗標
 }
 
 -- 轉錄中動畫 emoji 列表
@@ -148,19 +154,73 @@ local function getFFmpegPath()
   return "ffmpeg"
 end
 
--- 確保錄音資料夾存在
+-- Shell 安全引號（單引號包裹，內含單引號做轉義）
+local function shellQuote(s)
+  return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
+end
+
+-- 確保錄音資料夾存在（mkdir -p 支援多層）
 local function ensureRecordingDir()
   local dir = config.recordingDir
   if not hs.fs.attributes(dir) then
-    hs.fs.mkdir(dir)
+    hs.execute("mkdir -p " .. shellQuote(dir))
   end
   return dir
+end
+
+-- 一次性遷移：把舊 Documents/botrun-hammer-recordings 搬到新的 Application Support 路徑
+-- 原因：Documents 會被 iCloud Drive 同步吃掉，長錄音可能被搬離本地造成檔案「消失」
+local function migrateLegacyRecordings()
+  local legacy = config.legacyRecordingDir
+  if not legacy or not hs.fs.attributes(legacy) then
+    return
+  end
+  ensureRecordingDir()
+  -- 把舊資料夾內所有檔案搬到新資料夾（含 .m4a 與 history.json）
+  local cmd = string.format(
+    "mv -n %s/* %s/ 2>/dev/null; rmdir %s 2>/dev/null",
+    shellQuote(legacy), shellQuote(config.recordingDir), shellQuote(legacy)
+  )
+  hs.execute(cmd)
+  print("[波特槌] 已將舊錄音從 Documents 遷移至 Application Support")
 end
 
 -- 產生時間戳檔名
 local function generateRecordingFilename()
   local timestamp = os.date("%Y-%m-%d_%H-%M-%S")
   return config.recordingDir .. "/" .. timestamp .. ".m4a"
+end
+
+-- 讀取日誌末段（用於錯誤回報）
+local function readLogTail(path, maxBytes)
+  if not path then return "(無日誌路徑)" end
+  local f = io.open(path, "r")
+  if not f then return "(日誌讀取失敗: " .. path .. ")" end
+  local content = f:read("*a") or ""
+  f:close()
+  if content == "" then return "(日誌為空)" end
+  maxBytes = maxBytes or 800
+  if #content > maxBytes then
+    content = "...\n" .. content:sub(-maxBytes)
+  end
+  return content
+end
+
+-- 持久顯示錯誤通知（不會閃一下就消失）
+local function showPersistentError(title, body)
+  -- 長時間 alert
+  hs.alert.show(title .. "\n" .. body, 15)
+  -- 永久通知（需要使用者手動點擊才消失）
+  hs.notify.new({
+    title = title,
+    informativeText = body,
+    withdrawAfter = 0,
+    hasActionButton = true,
+    actionButtonTitle = "知道了",
+    soundName = hs.notify.defaultNotificationSound,
+  }):send()
+  -- 同時印到 Hammerspoon console，F1 或 hs.console 可回查
+  print("[波特槌][ERROR] " .. title .. " | " .. body)
 end
 
 -- 取得 jq 路徑
@@ -408,56 +468,131 @@ end
 -- ========================================
 
 -- 開始錄音
+--
+-- v1.6.6 長錄音穩定性改造（目標：支援 5 小時不遺失）
+-- 根本原因修正：
+--   (1) hs.task 預設以 pipe 捕獲 stdout/stderr，macOS pipe buffer 僅 ~64KB。
+--       ffmpeg 每秒一行進度輸出，~10 分鐘後 pipe 塞滿、ffmpeg 阻塞在 write()，
+--       錄音完全停擺 → 這就是「閃一下就不見」的主凶。
+--       對策：用 bash 包裝，-loglevel warning 降量，stderr 導向「日誌檔」(不是 /dev/null，
+--       便於事後回報錯誤)，stdin 從 /dev/null 讀，徹底與 hs.task 的 pipe 脫鉤。
+--   (2) MP4/M4A 需要 moov atom 才能播放，SIGTERM 若沒 flush 會留下廢檔。
+--       對策：-movflags +frag_keyframe+empty_moov+default_base_moof + -frag_duration 1s，
+--       每秒寫一顆 moof fragment；moov atom 一開始就寫在檔頭，檔案隨時 kill 都可播，
+--       最多只會遺失最後 1 秒。
+--   (3) Documents 會被 iCloud Drive 同步，長錄音可能被搬離本地。
+--       對策：config.recordingDir 改到 ~/Library/Application Support/botrun-hammer/recordings。
+--   (4) 系統睡眠會斷錄音。對策：hs.caffeinate.set 禁止 system/display idle。
+--   (5) 沒 -nostdin ffmpeg 會讀 stdin 可能意外退出。對策：加 -nostdin 並 < /dev/null。
 local function startRecording()
   local ffmpegPath = getFFmpegPath()
 
   -- 檢查 ffmpeg 是否存在
   if not hs.fs.attributes(ffmpegPath) and ffmpegPath ~= "ffmpeg" then
-    hs.alert.show("需要 ffmpeg 才能錄音\n請執行: brew install ffmpeg", 3)
+    showPersistentError("❌ 需要 ffmpeg 才能錄音", "請執行: brew install ffmpeg")
     return false
   end
 
   -- 確保錄音資料夾存在
   ensureRecordingDir()
 
-  -- 產生錄音檔名
+  -- 產生錄音檔名與日誌檔名
   state.currentRecordingFile = generateRecordingFilename()
+  state.currentStderrLog = state.currentRecordingFile:gsub("%.m4a$", ".log")
   state.isRecording = true
   state.startTime = hs.timer.secondsSinceEpoch()
 
   -- 偵測最佳麥克風
   local micIndex = getBestMicIndex()
 
-  -- 啟動 ffmpeg 錄音（即時壓縮 M4A/AAC）
-  state.recordingTask = hs.task.new(ffmpegPath, nil, {
-    "-y",                                    -- 覆寫既有檔案
-    "-f", "avfoundation",                    -- macOS 音訊輸入
-    "-i", micIndex,                          -- 智慧偵測麥克風
-    "-acodec", "aac",                        -- AAC 編碼
-    "-b:a", config.audioBitrate,             -- 位元率
-    "-ar", tostring(config.sampleRate),      -- 取樣率
-    "-ac", tostring(config.channels),        -- 聲道數
-    state.currentRecordingFile               -- 輸出檔案
-  })
+  -- 組 bash 命令：exec ffmpeg 讓 PID 替換，SIGTERM 直達 ffmpeg；
+  -- stdin 從 /dev/null 讀避免任何誤觸；stderr 導向 per-recording log 檔避免 pipe 塞爆
+  local ffmpegCmd = string.format(
+    "exec %s -nostdin -hide_banner -loglevel warning -y "
+    .. "-f avfoundation -i %s "
+    .. "-acodec aac -b:a %s -ar %d -ac %d "
+    .. "-movflags +frag_keyframe+empty_moov+default_base_moof "
+    .. "-frag_duration %d "
+    .. "%s < /dev/null 2> %s",
+    shellQuote(ffmpegPath),
+    shellQuote(micIndex),
+    config.audioBitrate,
+    config.sampleRate,
+    config.channels,
+    config.fragDurationUs,
+    shellQuote(state.currentRecordingFile),
+    shellQuote(state.currentStderrLog)
+  )
+
+  print("[波特槌] 錄音命令: " .. ffmpegCmd)
+
+  -- exit callback：偵測「非預期退出」（state.isRecording 還是 true 表示使用者沒按停止）
+  local recordingFileAtStart = state.currentRecordingFile
+  local stderrLogAtStart = state.currentStderrLog
+  local exitCb = function(exitCode, stdout, stderr)
+    -- 正常停止會先把 state.isRecording 設成 false，才 terminate，所以這裡只處理非預期
+    if state.isRecording and state.currentRecordingFile == recordingFileAtStart then
+      state.isRecording = false
+      state.recordingTask = nil
+      -- 釋放 caffeinate
+      if state.caffeinateSystem then hs.caffeinate.set("systemIdle", false, true); state.caffeinateSystem = false end
+      if state.caffeinateDisplay then hs.caffeinate.set("displayIdle", false, true); state.caffeinateDisplay = false end
+      -- 讀日誌末段給使用者看
+      local tail = readLogTail(stderrLogAtStart, 800)
+      local fileAttrs = hs.fs.attributes(recordingFileAtStart)
+      local fileSize = fileAttrs and fileAttrs.size or 0
+      local body = string.format(
+        "ffmpeg 非預期退出 exit=%s\n檔案: %s\n大小: %d bytes\n\n日誌末段:\n%s",
+        tostring(exitCode or -1),
+        recordingFileAtStart,
+        fileSize,
+        tail
+      )
+      showPersistentError("❌ 錄音中斷！", body)
+      -- 寫入歷史讓 F7 找得到壞檔（fragmented MP4 通常仍可播放）
+      addToHistory(nil, recordingFileAtStart, "failed")
+    end
+  end
+
+  state.recordingTask = hs.task.new("/bin/bash", exitCb, {"-c", ffmpegCmd})
 
   local success = state.recordingTask:start()
 
   if success then
+    -- 防止系統/顯示器睡眠（5 小時長錄音必備）
+    hs.caffeinate.set("systemIdle", true, true)
+    hs.caffeinate.set("displayIdle", true, true)
+    state.caffeinateSystem = true
+    state.caffeinateDisplay = true
     hs.alert.show("🎙️ 波特槌 v" .. VERSION .. " 正在傾聽\n(再按 F5 停止)", 2)
     return true
   else
-    hs.alert.show("啟動錄音失敗", 2)
+    showPersistentError("❌ 啟動錄音失敗", "hs.task:start() 回傳 false，請檢查 Hammerspoon console")
     state.isRecording = false
     state.currentRecordingFile = nil
+    state.currentStderrLog = nil
     return false
   end
 end
 
 -- 停止錄音
 local function stopRecording()
+  -- 先清旗標，避免 exit callback 誤判為「非預期退出」
+  state.isRecording = false
+
   if state.recordingTask then
     state.recordingTask:terminate()
     state.recordingTask = nil
+  end
+
+  -- 釋放 caffeinate
+  if state.caffeinateSystem then
+    hs.caffeinate.set("systemIdle", false, true)
+    state.caffeinateSystem = false
+  end
+  if state.caffeinateDisplay then
+    hs.caffeinate.set("displayIdle", false, true)
+    state.caffeinateDisplay = false
   end
 
   local duration = 0
@@ -465,11 +600,25 @@ local function stopRecording()
     duration = hs.timer.secondsSinceEpoch() - state.startTime
   end
 
-  state.isRecording = false
   state.startTime = nil
 
-  -- 回傳錄音時長和檔案路徑
   local recordingFile = state.currentRecordingFile
+  local stderrLog = state.currentStderrLog
+
+  -- 驗證檔案是否真的寫出且非空
+  if recordingFile then
+    local attrs = hs.fs.attributes(recordingFile)
+    if not attrs or attrs.size == 0 then
+      local tail = readLogTail(stderrLog, 800)
+      showPersistentError(
+        "❌ 錄音檔遺失或為 0 bytes",
+        string.format("檔案: %s\n\n日誌末段:\n%s", recordingFile, tail)
+      )
+    else
+      print(string.format("[波特槌] 錄音檔大小: %d bytes, 時長: %.1f 秒", attrs.size, duration))
+    end
+  end
+
   return duration, recordingFile
 end
 
@@ -961,6 +1110,11 @@ end
 -- ========================================
 -- 初始化
 -- ========================================
+
+-- 一次性遷移：Documents → Application Support（避開 iCloud 同步）
+migrateLegacyRecordings()
+-- 確保新資料夾存在
+ensureRecordingDir()
 
 hs.alert.show("🔨 波特槌 v" .. VERSION .. " 已啟動\n🎤 F5 語音輸入 | F6 文字歷史 | F7 檔案歷史\n⎋ ESC 取消轉錄", 3)
 
