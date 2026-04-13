@@ -1,0 +1,28 @@
+開發記錄 - 2026-04-13 17:43 (台灣時間)
+==========================================
+
+任務：波特槌升級至 v1.6.6 - 拉取最新版本並 Reload Config
+
+執行動作：
+1. git pull 拉取遠端最新版本（500fd46 → 48ca3e7）
+2. 檔案已從 botrun-whisper.lua 改名為 botrun-hammer.lua
+3. Hammerspoon Reload Config 完成
+
+v1.6.6 修正內容（遠端已完成）：
+- 根本原因：hs.task pipe buffer 僅 ~64KB，ffmpeg 每秒輸出一行，約 10 分鐘後塞滿導致錄音停擺
+- 改用 bash 包裝 ffmpeg，stderr 導向日誌檔，脫離 hs.task pipe
+- Fragmented MP4（-movflags +frag_keyframe+empty_moov+default_base_moof），每秒寫一個 moof
+- 錄音目錄移至 ~/Library/Application Support/botrun-hammer/recordings（避開 iCloud 同步）
+- hs.caffeinate 防止系統/螢幕休眠
+- ffmpeg 加 -nostdin 避免 stdin 意外退出
+- 非預期中斷可視化（顯示 ffmpeg stderr 日誌）
+
+地雷紀錄：
+- 本地修改過的舊版 botrun-whisper.lua 會與遠端 rename 衝突，需先 stash/discard 再 pull
+- hs.task 的 pipe buffer 限制是長錄音的根本殺手，必須用 bash redirect 繞過
+- M4A 的 moov atom 問題可用 fragmented MP4 徹底解決
+
+經驗累積：
+- Hammerspoon hs.task pipe buffer 限制是 macOS 的 64KB PIPE_BUF
+- fragmented MP4 (fMP4) 不需要尾部 moov atom，隨時可讀
+- iCloud Drive 會自動 evict 本地檔案，長錄音要避開 Documents 資料夾
