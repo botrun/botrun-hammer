@@ -1,0 +1,13 @@
+時間：2026-04-14 17:34:15 (Asia/Taipei)
+任務：啟動 botrun-hammer
+
+## 執行內容
+1. 確認 Hammerspoon 程序正在運行（pgrep -x Hammerspoon → PID 5022）
+2. 透過 `open -g "hammerspoon://reload"` 觸發 Hammerspoon 重新載入設定
+3. 波特槌 v1.6.6 設定已重新載入生效
+
+## 地雷與經驗
+- 「啟動 botrun-hammer」不等於啟動 Hammerspoon app 本身，而是重新載入 Hammerspoon 設定讓 `~/.hammerspoon/botrun-hammer.lua` 生效
+- 使用 `hammerspoon://reload` URL scheme 比手動點選 menu bar 更快，且可在 script 中自動化
+- 先用 `pgrep -x Hammerspoon` 確認程序存在，避免對尚未啟動的 app 發送 reload URL
+- 若 Hammerspoon 未運行，應先 `open -a Hammerspoon` 再 reload
