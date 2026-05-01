@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.6.6 - Mac 語音轉文字
+  🔨 波特槌 v1.6.9 - Mac 語音轉文字
 
   由 Gemini API 驅動的語音輸入助手
 
@@ -24,7 +24,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.6.6"
+local VERSION = "1.6.9"
 
 -- 目前腳本檔案路徑（用於自動更新）
 local SCRIPT_PATH = debug.getinfo(1, "S").source:match("^@(.+)$")
@@ -94,6 +94,8 @@ local state = {
   cancelHotkey = nil,          -- ESC 取消熱鍵（轉錄時綁定）
   caffeinateDisplay = false,   -- 錄音期間防顯示器睡眠旗標
   caffeinateSystem = false,    -- 錄音期間防系統睡眠旗標
+  heartbeatTimer = nil,        -- 錄音期間每 30 秒心跳 logger（v1.6.7+）
+  heartbeatTickCount = 0,      -- 心跳次數（用於指數測試比對）
 }
 
 -- 轉錄中動畫 emoji 列表
@@ -138,6 +140,158 @@ end
 -- 取得 Gemini API Key
 local function getGeminiApiKey()
   return getEnvKey("GEMINI_API_KEY")
+end
+
+-- ========================================
+-- 雲端日誌（v1.6.8+）— 自動把錄音事件送到 Cloud Logging
+-- ========================================
+-- 設計：async fire-and-forget，永遠不阻擋錄音；失敗靜默（避免拖累體驗）
+-- BOTRUN_HAMMER_LOG_URL / BOTRUN_HAMMER_LOG_TOKEN 在 install.sh 寫進 .env，使用者免設
+-- 機敏邊界：只送 metadata（檔名 basename / 大小 / 時間 / pid / stderr 末段），不送錄音內容/轉錄文字
+
+local cloudLogConfig = {
+  url = nil,
+  token = nil,
+  hostname = nil,        -- 短 hostname（hostname -s）
+  computer_name = nil,   -- 使用者設定的電腦名稱（scutil ComputerName）
+  machine_id = nil,      -- 持久化機器 UUID（first-run 生成，存 ~/.botrun-hammer/machine-id）
+  os_user = nil,         -- 登入帳號
+  loaded = false,
+}
+
+-- 讀第一行 trim
+local function shellOneLine(cmd)
+  local h = io.popen(cmd .. " 2>/dev/null")
+  if not h then return "" end
+  local s = h:read("*a") or ""
+  h:close()
+  return (s:gsub("[\r\n]+$", ""):gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local function loadCloudLogConfig()
+  if cloudLogConfig.loaded then return end
+  cloudLogConfig.loaded = true
+  cloudLogConfig.url = getEnvKey("BOTRUN_HAMMER_LOG_URL")
+  cloudLogConfig.token = getEnvKey("BOTRUN_HAMMER_LOG_TOKEN")
+
+  -- 短主機名（"Mac"、"bohachu-mbp" 之類）
+  local h = shellOneLine("hostname -s")
+  if h == "" then h = "unknown" end
+  cloudLogConfig.hostname = h
+
+  -- 使用者命名的電腦名稱，例如「Bowen 的 MacBook Pro」
+  cloudLogConfig.computer_name = shellOneLine("scutil --get ComputerName") or ""
+  if cloudLogConfig.computer_name == "" then
+    cloudLogConfig.computer_name = cloudLogConfig.hostname
+  end
+
+  -- 持久化 machine_id：first-run 生成 UUID 存到 ~/.botrun-hammer/machine-id
+  local idFile = os.getenv("HOME") .. "/.botrun-hammer/machine-id"
+  local fid = io.open(idFile, "r")
+  if fid then
+    local content = fid:read("*a") or ""
+    fid:close()
+    cloudLogConfig.machine_id = (content:gsub("[\r\n]+$", ""):gsub("^%s+", ""):gsub("%s+$", ""))
+  end
+  if not cloudLogConfig.machine_id or cloudLogConfig.machine_id == "" then
+    -- 生 8 位 hex（足夠去重，又不會太長）
+    local newId = shellOneLine("/usr/bin/uuidgen | tr 'A-Z' 'a-z' | cut -c1-8")
+    if newId == "" then newId = string.format("%08x", os.time() % 0xffffffff) end
+    cloudLogConfig.machine_id = newId
+    -- 確保資料夾存在
+    os.execute("mkdir -p " .. os.getenv("HOME") .. "/.botrun-hammer")
+    local fout = io.open(idFile, "w")
+    if fout then fout:write(newId); fout:close() end
+  end
+
+  cloudLogConfig.os_user = os.getenv("USER") or "unknown"
+
+  if cloudLogConfig.url and cloudLogConfig.token then
+    print(string.format(
+      "[波特槌][cloudlog] 雲端日誌啟用 host=%s computer=%s machine_id=%s user=%s",
+      cloudLogConfig.hostname, cloudLogConfig.computer_name,
+      cloudLogConfig.machine_id, cloudLogConfig.os_user
+    ))
+  else
+    print("[波特槌][cloudlog] 未設定（缺 BOTRUN_HAMMER_LOG_URL 或 BOTRUN_HAMMER_LOG_TOKEN）")
+  end
+end
+
+-- 把任意 lua table 轉成最小 JSON（只支援 string/number/bool/nil/table，足夠我們用）
+local function jsonEncode(v)
+  local t = type(v)
+  if t == "nil" then return "null" end
+  if t == "boolean" then return v and "true" or "false" end
+  if t == "number" then
+    if v ~= v or v == math.huge or v == -math.huge then return "null" end
+    return tostring(v)
+  end
+  if t == "string" then
+    local s = v:gsub("\\", "\\\\"):gsub('"', '\\"'):gsub("\n", "\\n"):gsub("\r", "\\r"):gsub("\t", "\\t")
+    -- 控制字元清掉
+    s = s:gsub("[%c]", function(c) return string.format("\\u%04x", string.byte(c)) end)
+    return '"' .. s .. '"'
+  end
+  if t == "table" then
+    -- array vs object
+    local n = 0
+    for _ in pairs(v) do n = n + 1 end
+    local arrN = #v
+    if arrN == n and arrN > 0 then
+      local parts = {}
+      for i = 1, arrN do parts[#parts+1] = jsonEncode(v[i]) end
+      return "[" .. table.concat(parts, ",") .. "]"
+    else
+      local parts = {}
+      for k, vv in pairs(v) do
+        parts[#parts+1] = jsonEncode(tostring(k)) .. ":" .. jsonEncode(vv)
+      end
+      return "{" .. table.concat(parts, ",") .. "}"
+    end
+  end
+  return '"' .. tostring(v) .. '"'
+end
+
+-- 送一筆事件到雲端（async，永不阻擋）
+-- event 是字串如 "heartbeat" / "start" / "stop" / "exit" / "error"
+-- fields 是 table，會合併進 payload
+local function cloudLog(event, fields, severity)
+  loadCloudLogConfig()
+  if not cloudLogConfig.url or not cloudLogConfig.token then return end
+
+  local payload = {
+    event = event,
+    severity = severity or "INFO",
+    version = VERSION,
+    hostname = cloudLogConfig.hostname,
+    computer_name = cloudLogConfig.computer_name,
+    machine_id = cloudLogConfig.machine_id,
+    os_user = cloudLogConfig.os_user,
+    ts = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+  }
+  if fields then
+    for k, v in pairs(fields) do payload[k] = v end
+  end
+
+  local body = jsonEncode(payload)
+  -- 用 hs.task 跑 curl async，stdin 餵 body 避免 cmdline 過長/特殊字元
+  -- 寫入 tmpfile 比 echo|pipe 更穩
+  local tmpFile = string.format("/tmp/botrun-hammer-clog-%d-%d.json",
+    hs.timer.absoluteTime(), math.random(0, 999999))
+  local f = io.open(tmpFile, "w")
+  if not f then return end
+  f:write(body)
+  f:close()
+
+  local cmd = string.format(
+    "exec /usr/bin/curl -sS --max-time 5 -X POST %s "
+    .. "-H 'Authorization: Bearer %s' "
+    .. "-H 'Content-Type: application/json' "
+    .. "--data-binary @%s -o /dev/null; rm -f %s",
+    cloudLogConfig.url, cloudLogConfig.token, tmpFile, tmpFile
+  )
+  local task = hs.task.new("/bin/bash", function(_) end, {"-c", cmd})
+  if task then task:start() end
 end
 
 -- 取得 ffmpeg 路徑
@@ -221,6 +375,8 @@ local function showPersistentError(title, body)
   }):send()
   -- 同時印到 Hammerspoon console，F1 或 hs.console 可回查
   print("[波特槌][ERROR] " .. title .. " | " .. body)
+  -- 雲端日誌：使用者看到的所有錯誤都送一份上去
+  cloudLog("error", { title = title, body = body }, "ERROR")
 end
 
 -- 取得 jq 路徑
@@ -484,6 +640,70 @@ end
 --       對策：config.recordingDir 改到 ~/Library/Application Support/botrun-hammer/recordings。
 --   (4) 系統睡眠會斷錄音。對策：hs.caffeinate.set 禁止 system/display idle。
 --   (5) 沒 -nostdin ffmpeg 會讀 stdin 可能意外退出。對策：加 -nostdin 並 < /dev/null。
+-- 心跳 logger（v1.6.7+）：錄音期間每 30 秒寫一行到 Hammerspoon console
+-- 目的：長錄音失敗時，從 console 拉時間軸；最後一個心跳 = 故障時刻
+local function heartbeatTick()
+  if not state.isRecording then return end
+  state.heartbeatTickCount = (state.heartbeatTickCount or 0) + 1
+  local elapsed = state.startTime and (hs.timer.secondsSinceEpoch() - state.startTime) or 0
+  local recFile = state.currentRecordingFile
+  local logFile = state.currentStderrLog
+  local recAttrs = recFile and hs.fs.attributes(recFile) or nil
+  local logAttrs = logFile and hs.fs.attributes(logFile) or nil
+  local recSize = recAttrs and recAttrs.size or 0
+  local logSize = logAttrs and logAttrs.size or 0
+  -- 用 statvfs 風格抓剩餘空間（df -k 一行）
+  local diskFreeKB = -1
+  if recFile then
+    local dir = recFile:match("(.*)/") or "/"
+    local h = io.popen(string.format("df -k %q | tail -1 | awk '{print $4}'", dir))
+    if h then
+      local s = h:read("*a")
+      h:close()
+      diskFreeKB = tonumber((s or ""):match("(%d+)")) or -1
+    end
+  end
+  local taskAlive = state.recordingTask and state.recordingTask:isRunning() or false
+  local pid = state.recordingTask and state.recordingTask:pid() or -1
+  print(string.format(
+    "[波特槌][heartbeat] tick=%d elapsed=%.1fs file_size=%d log_size=%d disk_free_kb=%d task_running=%s pid=%s",
+    state.heartbeatTickCount, elapsed, recSize, logSize, diskFreeKB,
+    tostring(taskAlive), tostring(pid)
+  ))
+  cloudLog("heartbeat", {
+    tick = state.heartbeatTickCount,
+    elapsed_s = elapsed,
+    file_size = recSize,
+    log_size = logSize,
+    disk_free_kb = diskFreeKB,
+    task_running = taskAlive,
+    pid = pid,
+    file_basename = recFile and (recFile:match("([^/]+)$") or "") or "",
+  })
+  -- 第一次（30 秒）和每 10 次（5 分鐘）多附帶一行 alert，方便桌面看
+  if state.heartbeatTickCount == 1 or state.heartbeatTickCount % 10 == 0 then
+    print(string.format(
+      "[波特槌][heartbeat] 已錄 %.1f 分鐘，檔案 %.2f MB",
+      elapsed / 60, recSize / 1024 / 1024
+    ))
+  end
+end
+
+local function startHeartbeat()
+  state.heartbeatTickCount = 0
+  if state.heartbeatTimer then state.heartbeatTimer:stop() end
+  state.heartbeatTimer = hs.timer.doEvery(30, heartbeatTick)
+  print("[波特槌][heartbeat] timer 啟動（每 30 秒一拍）")
+end
+
+local function stopHeartbeat()
+  if state.heartbeatTimer then
+    state.heartbeatTimer:stop()
+    state.heartbeatTimer = nil
+    print(string.format("[波特槌][heartbeat] timer 停止，總共 %d 拍", state.heartbeatTickCount or 0))
+  end
+end
+
 local function startRecording()
   local ffmpegPath = getFFmpegPath()
 
@@ -534,6 +754,16 @@ local function startRecording()
     if state.isRecording and state.currentRecordingFile == recordingFileAtStart then
       state.isRecording = false
       state.recordingTask = nil
+      stopHeartbeat()
+      print(string.format("[波特槌][exit] ffmpeg 非預期退出 exit=%s file=%s", tostring(exitCode or -1), recordingFileAtStart))
+      local _tail = readLogTail(stderrLogAtStart, 800)
+      local _attrs = hs.fs.attributes(recordingFileAtStart)
+      cloudLog("exit_unexpected", {
+        exit_code = tostring(exitCode or -1),
+        file_basename = recordingFileAtStart:match("([^/]+)$") or "",
+        file_size = _attrs and _attrs.size or 0,
+        stderr_tail = _tail,
+      }, "ERROR")
       -- 釋放 caffeinate
       if state.caffeinateSystem then hs.caffeinate.set("systemIdle", false, true); state.caffeinateSystem = false end
       if state.caffeinateDisplay then hs.caffeinate.set("displayIdle", false, true); state.caffeinateDisplay = false end
@@ -564,6 +794,16 @@ local function startRecording()
     hs.caffeinate.set("displayIdle", true, true)
     state.caffeinateSystem = true
     state.caffeinateDisplay = true
+    startHeartbeat()
+    print(string.format(
+      "[波特槌][start] file=%s log=%s pid=%s",
+      tostring(state.currentRecordingFile), tostring(state.currentStderrLog),
+      tostring(state.recordingTask and state.recordingTask:pid() or -1)
+    ))
+    cloudLog("start", {
+      file_basename = state.currentRecordingFile and (state.currentRecordingFile:match("([^/]+)$") or "") or "",
+      pid = state.recordingTask and state.recordingTask:pid() or -1,
+    })
     hs.alert.show("🎙️ 波特槌 v" .. VERSION .. " 正在傾聽\n(再按 F5 停止)", 2)
     return true
   else
@@ -579,6 +819,15 @@ end
 local function stopRecording()
   -- 先清旗標，避免 exit callback 誤判為「非預期退出」
   state.isRecording = false
+  stopHeartbeat()
+  local _stopElapsed = state.startTime and (hs.timer.secondsSinceEpoch() - state.startTime) or 0
+  print(string.format("[波特槌][stop] 使用者停止錄音 elapsed=%.1fs file=%s",
+    _stopElapsed, tostring(state.currentRecordingFile)))
+  cloudLog("stop", {
+    elapsed_s = _stopElapsed,
+    file_basename = state.currentRecordingFile and (state.currentRecordingFile:match("([^/]+)$") or "") or "",
+    tick_count = state.heartbeatTickCount or 0,
+  })
 
   if state.recordingTask then
     state.recordingTask:terminate()
@@ -616,6 +865,18 @@ local function stopRecording()
       )
     else
       print(string.format("[波特槌] 錄音檔大小: %d bytes, 時長: %.1f 秒", attrs.size, duration))
+      -- recording_finalized 延遲 3 秒發，給 ffmpeg 真正 flush + moov 寫完的時間
+      -- 否則 attrs.size 只會看到 moov header（28 bytes 之類）誤報
+      local _capturedFile = recordingFile
+      local _capturedDuration = duration
+      hs.timer.doAfter(3, function()
+        local finalAttrs = hs.fs.attributes(_capturedFile)
+        cloudLog("recording_finalized", {
+          file_basename = _capturedFile:match("([^/]+)$") or "",
+          file_size = finalAttrs and finalAttrs.size or 0,
+          duration_s = _capturedDuration,
+        })
+      end)
     end
   end
 
@@ -632,11 +893,23 @@ local function transcribeWithGemini(recordingFile, callback)
   local apiKey = getGeminiApiKey()
 
   if not apiKey then
+    cloudLog("transcribe_failed", {
+      file_basename = recordingFile and (recordingFile:match("([^/]+)$") or "") or "",
+      reason = "no_api_key",
+    }, "ERROR")
     callback(nil, "Gemini API Key 未設定")
     return
   end
 
   local jqPath = getJqPath()
+  local _attrs = hs.fs.attributes(recordingFile)
+  local _fileSize = _attrs and _attrs.size or 0
+  local _txStartEpoch = hs.timer.secondsSinceEpoch()
+  cloudLog("transcribe_request_start", {
+    file_basename = recordingFile:match("([^/]+)$") or "",
+    file_size = _fileSize,
+    model = config.geminiModel,
+  })
 
   -- Gemini 需要先上傳檔案，再呼叫 generateContent
   -- 使用 shell script 一次完成整個流程
@@ -699,18 +972,52 @@ local function transcribeWithGemini(recordingFile, callback)
   ]], apiKey, recordingFile, config.geminiUploadUrl, jqPath, config.geminiApiUrl, config.geminiModel)
 
   local task = hs.task.new("/bin/bash", function(exitCode, stdout, stderr)
+    local _latency = hs.timer.secondsSinceEpoch() - _txStartEpoch
+    local _stdoutLen = stdout and #stdout or 0
+    local _stderrLen = stderr and #stderr or 0
     if exitCode ~= 0 then
+      cloudLog("transcribe_failed", {
+        file_basename = recordingFile:match("([^/]+)$") or "",
+        file_size = _fileSize,
+        reason = "shell_nonzero_exit",
+        exit_code = exitCode,
+        latency_s = _latency,
+        stderr_tail = (stderr or ""):sub(-800),
+        stdout_tail = (stdout or ""):sub(-400),
+      }, "ERROR")
       callback(nil, "Gemini 連線失敗: " .. (stderr or ""))
       return
     end
+
+    cloudLog("transcribe_request_done", {
+      file_basename = recordingFile:match("([^/]+)$") or "",
+      latency_s = _latency,
+      stdout_bytes = _stdoutLen,
+      stderr_bytes = _stderrLen,
+    })
 
     -- 解析 Gemini 回應
     local parseTask = hs.task.new("/bin/bash", function(_, jsonOut, _)
       local text = jsonOut:gsub("^%s*(.-)%s*$", "%1")  -- trim
 
       if text and text ~= "" and text ~= "null" then
+        cloudLog("transcribe_success", {
+          file_basename = recordingFile:match("([^/]+)$") or "",
+          file_size = _fileSize,
+          latency_s = _latency,
+          text_length = #text,
+          -- 注意：text 內容不送雲端（隱私）
+        })
         callback(text, nil)
       else
+        -- 解析失敗：dump stdout 末段以利除錯（可能含 API error 訊息）
+        cloudLog("transcribe_failed", {
+          file_basename = recordingFile:match("([^/]+)$") or "",
+          file_size = _fileSize,
+          reason = "empty_or_null_text",
+          latency_s = _latency,
+          api_response_tail = (stdout or ""):sub(-1200),
+        }, "ERROR")
         callback(nil, "Gemini 無法解析回應: " .. stdout)
       end
     end, {"-c", "echo '" .. stdout:gsub("'", "'\\''") .. "' | " .. jqPath .. " -r '.candidates[0].content.parts[0].text // empty'"})
@@ -754,6 +1061,9 @@ local function cancelTranscription()
   if not state.isTranscribing then return end
 
   print("[波特槌] 使用者取消轉錄")
+  cloudLog("transcribe_cancelled", {
+    file_basename = state.transcribeFile and (state.transcribeFile:match("([^/]+)$") or "") or "",
+  }, "WARNING")
 
   -- 終止轉錄任務
   if state.transcribeTask then
@@ -790,6 +1100,10 @@ end
 local function transcribe(recordingFile, callback)
   -- 檢查檔案是否存在
   if not recordingFile or not hs.fs.attributes(recordingFile) then
+    cloudLog("transcribe_failed", {
+      file_basename = recordingFile and (recordingFile:match("([^/]+)$") or "") or "(nil)",
+      reason = "file_not_found",
+    }, "ERROR")
     hs.alert.show("找不到錄音檔", 2)
     callback(nil, "找不到錄音檔案")
     return
@@ -799,6 +1113,12 @@ local function transcribe(recordingFile, callback)
   state.isTranscribing = true
   state.transcribeFile = recordingFile
   bindCancelHotkey()
+  local _outerStartEpoch = hs.timer.secondsSinceEpoch()
+  local _outerAttrs = hs.fs.attributes(recordingFile)
+  cloudLog("transcribe_start", {
+    file_basename = recordingFile:match("([^/]+)$") or "",
+    file_size = _outerAttrs and _outerAttrs.size or 0,
+  })
 
   -- 啟動轉錄動畫
   startTranscribeAnimation()
@@ -818,6 +1138,12 @@ local function transcribe(recordingFile, callback)
     if text then
       stopTranscribeAnimation()
       finishTranscription()
+      cloudLog("transcribe_done", {
+        file_basename = recordingFile:match("([^/]+)$") or "",
+        outer_latency_s = hs.timer.secondsSinceEpoch() - _outerStartEpoch,
+        text_length = #text,
+        is_retry = isRetry and true or false,
+      })
       if not config.keepSuccessfulRecordings then
         os.remove(recordingFile)
       end
@@ -827,6 +1153,11 @@ local function transcribe(recordingFile, callback)
     elseif not isRetry then
       -- 第一次失敗，retry 一次
       print("[波特槌] Gemini 第一次失敗: " .. (err or "未知錯誤") .. "，重試一次...")
+      cloudLog("transcribe_retry", {
+        file_basename = recordingFile:match("([^/]+)$") or "",
+        first_error = err or "unknown",
+        outer_elapsed_s = hs.timer.secondsSinceEpoch() - _outerStartEpoch,
+      }, "WARNING")
       hs.alert.show("⚠️ Gemini 暫時故障，重試中...", 1.5)
       hs.timer.doAfter(1, function()
         if not state.isTranscribing then return end  -- 已取消則不重試
@@ -838,6 +1169,11 @@ local function transcribe(recordingFile, callback)
       -- 重試也失敗
       stopTranscribeAnimation()
       finishTranscription()
+      cloudLog("transcribe_final_failed", {
+        file_basename = recordingFile:match("([^/]+)$") or "",
+        last_error = err or "unknown",
+        outer_latency_s = hs.timer.secondsSinceEpoch() - _outerStartEpoch,
+      }, "ERROR")
       hs.alert.show("❌ 轉錄失敗\n錄音已保留: " .. recordingFile:match("([^/]+)$"), 3)
       callback(nil, "Gemini 轉錄失敗（含重試）")
     end
@@ -997,6 +1333,15 @@ end
 
 -- F5 開始/停止錄音
 hs.hotkey.bind({}, config.hotkey, toggleRecording)
+
+-- v1.6.8+：暴露給 hs CLI 用，讓 scripts/realtime_drive.sh 可以從外部驅動，不靠合成鍵盤事件
+_G.botrunHammerToggle = toggleRecording
+_G.botrunHammerIsRecording = function() return state.isRecording end
+_G.botrunHammerIsTranscribing = function() return state.isTranscribing end
+_G.botrunHammerIsBusy = function() return state.isRecording or state.isTranscribing end
+_G.botrunHammerCurrentFile = function() return state.currentRecordingFile end
+_G.botrunHammerTranscribeFile = function() return state.transcribeFile end
+_G.botrunHammerHistoryFile = function() return config.historyFile end
 
 -- F6 文字歷史選單
 hs.hotkey.bind({}, config.historyTextKey, showTextHistory)
@@ -1169,3 +1514,6 @@ checkDependencies()
 startAutoUpdate()
 
 print("[🔨 波特槌 v" .. VERSION .. "] 模組已載入（Gemini API｜F6 文字歷史｜F7 檔案歷史｜自動更新）")
+
+-- v1.6.8+：啟動時送一次「load」事件，確認雲端日誌通路有打通
+cloudLog("load", { script_path = SCRIPT_PATH })

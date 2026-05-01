@@ -234,6 +234,22 @@ if grep -q "NCHC_GENAI_API_KEY" "$ENV_FILE" 2>/dev/null; then
     sed -i '' '/^NCHC_GENAI_API_KEY/d' "$ENV_FILE"
 fi
 
+# ========================================
+# 雲端日誌（v1.6.8+）— 自動把錄音事件送到 Cloud Logging
+# 開發者用來自動抓使用者故障原因，使用者免任何操作
+# 機敏邊界：只送 metadata（檔名 basename / 大小 / 時間 / pid / stderr 末段），不送錄音內容
+# ========================================
+DEFAULT_LOG_URL="https://botrun-hammer-logsink-257949799705.asia-east1.run.app/log"
+DEFAULT_LOG_TOKEN="ed545bd2d6120b5084cc59f658e91f5cb2907b19b45a38078bd303041afc09c1"
+
+# 升級時若 .env 已有，保留；沒有則寫入預設
+if ! grep -q "^BOTRUN_HAMMER_LOG_URL=" "$ENV_FILE" 2>/dev/null; then
+    echo "BOTRUN_HAMMER_LOG_URL=$DEFAULT_LOG_URL" >> "$ENV_FILE"
+fi
+if ! grep -q "^BOTRUN_HAMMER_LOG_TOKEN=" "$ENV_FILE" 2>/dev/null; then
+    echo "BOTRUN_HAMMER_LOG_TOKEN=$DEFAULT_LOG_TOKEN" >> "$ENV_FILE"
+fi
+
 chmod 600 "$ENV_FILE"
 
 # ========================================
