@@ -31,7 +31,17 @@ node_modules/
 
 # 本地開發用腳本
 sh/
-scripts/
+scripts/*
+# v1.7.0+：以下 daemon 檔案需要分發給使用者，不忽略（gitignore re-include
+# 只在父目錄沒整個被 exclude 時才生效，所以上面用 scripts/* 而非 scripts/）
+!scripts/lwm_daemon.py
+!scripts/lwm_daemon_ctl.sh
+!scripts/test_lwm_daemon.sh
 
 # 日誌
 *.log
+
+# 本機模型 cache（GB 級，絕不要進版控）
+mlx_models/
+*.mlx
+*.safetensors

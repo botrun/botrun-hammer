@@ -122,6 +122,35 @@ fi
 echo -e "${GREEN}✅ Lua 腳本已部署${NC}"
 
 # ========================================
+# v1.7.0: 部署本機 STT daemon scripts (lightning-whisper-mlx)
+# ========================================
+
+echo "📝 部署本機 STT daemon 腳本（lightning-whisper-mlx）..."
+LWM_SCRIPT_DIR="$BOTRUN_DIR/scripts"
+mkdir -p "$LWM_SCRIPT_DIR"
+
+if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/scripts/lwm_daemon.py" ]]; then
+    cp "$SCRIPT_DIR/scripts/lwm_daemon.py" "$LWM_SCRIPT_DIR/lwm_daemon.py"
+    cp "$SCRIPT_DIR/scripts/lwm_daemon_ctl.sh" "$LWM_SCRIPT_DIR/lwm_daemon_ctl.sh"
+else
+    curl -fsSL "https://raw.githubusercontent.com/botrun/botrun-hammer/main/scripts/lwm_daemon.py" \
+        -o "$LWM_SCRIPT_DIR/lwm_daemon.py" || true
+    curl -fsSL "https://raw.githubusercontent.com/botrun/botrun-hammer/main/scripts/lwm_daemon_ctl.sh" \
+        -o "$LWM_SCRIPT_DIR/lwm_daemon_ctl.sh" || true
+fi
+chmod +x "$LWM_SCRIPT_DIR/lwm_daemon.py" "$LWM_SCRIPT_DIR/lwm_daemon_ctl.sh" 2>/dev/null || true
+
+# Python 偵測（不強裝 lightning-whisper-mlx；首次選本機引擎時 lazy install）
+if command -v python3 >/dev/null 2>&1; then
+    PY_VER=$(python3 -c 'import sys; print("%d.%d"%sys.version_info[:2])' 2>/dev/null || echo "?")
+    echo -e "${GREEN}✅ Python $PY_VER 已就緒${NC}（本機引擎可選）"
+    echo "   首次切換到本機引擎時，選單會自動執行 pip install lightning-whisper-mlx"
+else
+    echo -e "${YELLOW:-}⚠️  未找到 python3，本機引擎不可用（雲端 Gemini 仍正常運作）${NC:-}"
+    echo "   如需本機引擎：brew install python@3.12 後重執行 install.sh"
+fi
+
+# ========================================
 # 清除舊版腳本（如果存在）
 # ========================================
 

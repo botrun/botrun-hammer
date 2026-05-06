@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.6.9 - Mac 語音轉文字
+  🔨 波特槌 v1.7.10 - Mac 語音轉文字
 
   由 Gemini API 驅動的語音輸入助手
 
@@ -24,7 +24,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.6.9"
+local VERSION = "1.7.10"
 
 -- 目前腳本檔案路徑（用於自動更新）
 local SCRIPT_PATH = debug.getinfo(1, "S").source:match("^@(.+)$")
@@ -66,6 +66,26 @@ local config = {
   -- 歷史紀錄
   historyFile = os.getenv("HOME") .. "/Library/Application Support/botrun-hammer/recordings/history.json",
   maxHistory = 30,
+
+  -- v1.7.0: 本機 STT 引擎（lightning-whisper-mlx daemon）
+  lwm = {
+    ctlScript = os.getenv("HOME") .. "/.botrun-hammer/scripts/lwm_daemon_ctl.sh",
+    portFile  = os.getenv("HOME") .. "/.botrun-hammer/lwm.port",
+    tokenFile = os.getenv("HOME") .. "/.botrun-hammer/lwm.token",
+    -- v1.7.9: 改用 mlx-whisper backend，預設 large-v3-turbo（多語、約 large-v3 的 8 倍速）
+    defaultModel = "large-v3-turbo",
+    -- v1.7.6: lightning-whisper-mlx 0.0.10 + mlx 0.31.2 的 4bit 路徑壞掉
+    -- (QuantizedLinear.quantize_module 不存在)，預設 none 直到上游修復
+    defaultQuant = "none",
+    -- v1.7.10: KISS — 只露 turbo 一個本機選項，避免使用者選擇焦慮
+    menuModels = {
+      { key = "large-v3-turbo",  label = "💻 本機 large-v3-turbo (繁中)" },
+    },
+    -- 健康檢查 / 自動重啟參數
+    healthCheckInterval = 60,    -- 秒，每 N 秒打 /health
+    healthCheckTimeout = 4,      -- 秒，N 秒沒回視為卡死
+    autoRestartEnabled = true,
+  },
 
   -- 自動更新
   autoUpdate = {
@@ -1028,6 +1048,386 @@ local function transcribeWithGemini(recordingFile, callback)
   task:start()
 end
 
+-- ========================================
+-- v1.7.0: 本機 STT — lightning-whisper-mlx daemon
+-- ========================================
+
+local function lwmLog(msg)
+  print("[LWM-DEBUG " .. os.date("%H:%M:%S") .. "] " .. tostring(msg))
+end
+
+-- 讀小檔輔助（trim 換行）
+local function readSmallFile(path)
+  local fh = io.open(path, "r")
+  if not fh then return nil end
+  local content = fh:read("*a") or ""
+  fh:close()
+  return (content:gsub("%s+$", ""))
+end
+
+-- ========================================
+-- v1.7.4: 自動安裝 + 浮動進度條 UI
+-- ========================================
+
+local lwmProgress = {
+  canvas = nil,
+  totalSteps = 4,
+  step = 0,
+}
+
+function lwmProgress:show()
+  if self.canvas then return end
+  local screen = hs.screen.mainScreen()
+  local f = screen:frame()
+  local W, H = 520, 96
+  local x = f.x + (f.w - W) / 2
+  local y = f.y + 80
+  self.canvas = hs.canvas.new({ x = x, y = y, w = W, h = H })
+  self.canvas[1] = {
+    type = "rectangle", action = "fill",
+    fillColor = { alpha = 0.92, red = 0.08, green = 0.09, blue = 0.13 },
+    roundedRectRadii = { xRadius = 12, yRadius = 12 },
+  }
+  self.canvas[2] = {
+    type = "rectangle", action = "stroke",
+    strokeColor = { alpha = 0.5, red = 0.4, green = 0.7, blue = 0.4 },
+    strokeWidth = 1.5,
+    roundedRectRadii = { xRadius = 12, yRadius = 12 },
+  }
+  self.canvas[3] = {
+    type = "text",
+    text = "🔨 波特槌 — 自動安裝本機 STT 引擎",
+    textSize = 14, textColor = { white = 1 },
+    frame = { x = 20, y = 12, w = W - 40, h = 20 },
+  }
+  self.canvas[4] = {
+    type = "text",
+    text = "",
+    textSize = 11, textColor = { white = 0.85 },
+    frame = { x = 20, y = 36, w = W - 40, h = 18 },
+  }
+  self.canvas[5] = {
+    type = "rectangle", action = "fill",
+    fillColor = { white = 0.25 },
+    frame = { x = 20, y = 64, w = W - 40, h = 14 },
+    roundedRectRadii = { xRadius = 7, yRadius = 7 },
+  }
+  self.canvas[6] = {
+    type = "rectangle", action = "fill",
+    fillColor = { red = 0.3, green = 0.75, blue = 0.45 },
+    frame = { x = 20, y = 64, w = 0, h = 14 },
+    roundedRectRadii = { xRadius = 7, yRadius = 7 },
+  }
+  self.canvas:show()
+  self.step = 0
+end
+
+function lwmProgress:update(step, label)
+  if not self.canvas then return end
+  self.step = step
+  local pct = math.min(1.0, math.max(0, step / self.totalSteps))
+  local barWidth = (520 - 40) * pct
+  self.canvas[6].frame = { x = 20, y = 64, w = barWidth, h = 14 }
+  self.canvas[4].text = string.format("[%d/%d] %s", step, self.totalSteps, label or "")
+end
+
+function lwmProgress:fail(msg)
+  if not self.canvas then return end
+  self.canvas[6].fillColor = { red = 0.85, green = 0.3, blue = 0.3 }
+  self.canvas[6].frame = { x = 20, y = 64, w = 520 - 40, h = 14 }
+  self.canvas[4].text = "❌ " .. (msg or "失敗")
+  self.canvas[3].text = "🔨 波特槌 — 安裝失敗"
+end
+
+function lwmProgress:hide()
+  if self.canvas then
+    self.canvas:hide()
+    self.canvas:delete()
+    self.canvas = nil
+  end
+end
+
+local function isLwmInstalled(callback)
+  -- v1.7.5: 改用 venv 內 python 偵測
+  local venvPy = os.getenv("HOME") .. "/.botrun-hammer/venv/bin/python"
+  local probe = string.format(
+    "test -x %q && %q -c 'import lightning_whisper_mlx' 2>/dev/null",
+    venvPy, venvPy
+  )
+  local task = hs.task.new("/bin/bash", function(exitCode, _, _)
+    callback(exitCode == 0)
+  end, {"-c", probe})
+  task:start()
+end
+
+local function parsePipLine(line)
+  local pkg = line:match("^Collecting%s+([%w%-%._]+)")
+  if pkg then return "下載: " .. pkg end
+  pkg = line:match("^Downloading%s+([%w%-%._]+)")
+  if pkg then return "下載: " .. pkg end
+  pkg = line:match("Installing collected packages:%s*(.+)")
+  if pkg then return "安裝: " .. pkg:sub(1, 60) end
+  if line:match("Successfully installed") then return "驗證中…" end
+  if line:match("^ERROR: ") then return "⚠️ " .. line:sub(1, 80) end
+  return nil
+end
+
+local lwmInstalling = false
+
+local function autoInstallLwm(onDone)
+  if lwmInstalling then
+    lwmLog("autoInstallLwm: 已在安裝中，忽略重複呼叫")
+    if onDone then onDone(false) end
+    return
+  end
+  isLwmInstalled(function(installed)
+    if installed then
+      lwmLog("LWM 已安裝，跳過 auto-install")
+      if onDone then onDone(true) end
+      return
+    end
+    lwmInstalling = true
+    lwmLog("autoInstallLwm: 啟動 pip install 流程")
+    lwmProgress:show()
+    lwmProgress:update(1, "偵測 Python 環境…")
+
+    if not hs.fs.attributes(config.lwm.ctlScript) then
+      lwmProgress:fail("找不到 daemon 控制腳本（請等 self-heal 完成後再試）")
+      hs.timer.doAfter(5, function() lwmProgress:hide(); lwmInstalling = false end)
+      if onDone then onDone(false) end
+      return
+    end
+
+    lwmProgress:update(2, "下載 lightning-whisper-mlx 與依賴（約 1GB）…")
+
+    local installTask
+    installTask = hs.task.new("/bin/bash",
+      function(exitCode, stdout, stderr)
+        lwmInstalling = false
+        if exitCode == 0 then
+          lwmProgress:update(4, "✅ 完成，可開始使用本機引擎")
+          lwmLog("autoInstallLwm: 成功")
+          hs.timer.doAfter(2.5, function() lwmProgress:hide() end)
+          if onDone then onDone(true) end
+        else
+          local tail = (stderr or stdout or ""):sub(-150):gsub("\n", " ")
+          lwmProgress:fail(tail)
+          lwmLog("autoInstallLwm: 失敗 exit=" .. tostring(exitCode) .. " err_tail=" .. tail)
+          hs.timer.doAfter(8, function() lwmProgress:hide() end)
+          if onDone then onDone(false) end
+        end
+      end,
+      function(task, stdoutChunk, stderrChunk)
+        local data = (stdoutChunk or "") .. (stderrChunk or "")
+        for line in data:gmatch("[^\r\n]+") do
+          local label = parsePipLine(line)
+          if label then
+            local s = label:sub(1, 6) == "安裝:" and 3 or 2
+            lwmProgress:update(s, label)
+          end
+        end
+        return true
+      end,
+      { config.lwm.ctlScript, "install" }
+    )
+    installTask:start()
+  end)
+end
+
+-- v1.7.3: 升級路徑自我修復
+-- auto-update 只會拉這份 lua；daemon 腳本若缺（既有使用者升級到首次有 LWM 的版本），
+-- 從 GitHub raw 抓回來。沿用 auto-update 的 hs.http 非同步機制，不阻塞啟動。
+local LWM_RAW_BASE = "https://raw.githubusercontent.com/botrun/botrun-hammer/main/scripts"
+local LWM_REQUIRED_FILES = {
+  { name = "lwm_daemon.py",      mode = "0755" },
+  { name = "lwm_daemon_ctl.sh",  mode = "0755" },
+}
+
+local function ensureLwmScriptsDeployed(onComplete)
+  local scriptDir = os.getenv("HOME") .. "/.botrun-hammer/scripts"
+  os.execute("mkdir -p '" .. scriptDir .. "'")
+
+  local missing = {}
+  for _, f in ipairs(LWM_REQUIRED_FILES) do
+    local dest = scriptDir .. "/" .. f.name
+    if not hs.fs.attributes(dest) then
+      table.insert(missing, { name = f.name, dest = dest, mode = f.mode })
+    end
+  end
+
+  if #missing == 0 then
+    lwmLog("daemon scripts already deployed")
+    if onComplete then onComplete(true) end
+    return
+  end
+
+  lwmLog("self-heal: " .. #missing .. " daemon script(s) missing, fetching from GitHub raw...")
+  local pending = #missing
+  local allOk = true
+
+  for _, f in ipairs(missing) do
+    local url = LWM_RAW_BASE .. "/" .. f.name
+    lwmLog("fetching " .. url)
+    hs.http.asyncGet(url, nil, function(status, body, headers)
+      if status == 200 and body and #body > 0 then
+        local fh = io.open(f.dest, "w")
+        if fh then
+          fh:write(body)
+          fh:close()
+          os.execute("chmod " .. f.mode .. " '" .. f.dest .. "'")
+          lwmLog("self-heal saved " .. f.name .. " (" .. #body .. " bytes)")
+        else
+          lwmLog("ERROR: cannot write " .. f.dest)
+          allOk = false
+        end
+      else
+        lwmLog("ERROR: GitHub fetch failed " .. f.name .. " status=" .. tostring(status))
+        allOk = false
+      end
+      pending = pending - 1
+      if pending == 0 and onComplete then onComplete(allOk) end
+    end)
+  end
+end
+
+-- 確保 daemon 在跑（同步：阻塞最多 ~5 秒等 port 就緒）
+-- 回傳 true=就緒, false=失敗
+local function ensureLwmDaemon()
+  lwmLog("ensureLwmDaemon: ctlScript=" .. config.lwm.ctlScript)
+  if not hs.fs.attributes(config.lwm.ctlScript) then
+    lwmLog("FAIL: ctl script not found")
+    return false, "lwm_ctl_missing"
+  end
+  if readSmallFile(config.lwm.portFile) then
+    lwmLog("daemon already up, port=" .. tostring(readSmallFile(config.lwm.portFile)))
+    return true
+  end
+  lwmLog("daemon down, starting via " .. config.lwm.ctlScript .. " ensure ...")
+  local task = hs.task.new("/bin/bash", nil, {config.lwm.ctlScript, "ensure"})
+  task:start()
+  task:waitUntilExit()
+  local exitCode = task:terminationStatus()
+  lwmLog("ensure exit=" .. tostring(exitCode))
+  if exitCode ~= 0 then
+    return false, "ensure_nonzero(exit=" .. tostring(exitCode) .. ")"
+  end
+  local port = readSmallFile(config.lwm.portFile)
+  if not port then
+    lwmLog("FAIL: no port file after ensure")
+    return false, "no_port_file"
+  end
+  lwmLog("daemon started, port=" .. port)
+  return true
+end
+
+-- 呼叫本機 daemon 轉錄
+local function transcribeWithLightningWhisperMLX(recordingFile, callback)
+  lwmLog("transcribeWithLWM start: file=" .. tostring(recordingFile))
+  local ok, ensureErr = ensureLwmDaemon()
+  if not ok then
+    cloudLog("transcribe_failed", {
+      file_basename = recordingFile:match("([^/]+)$") or "",
+      reason = "lwm_ensure_failed:" .. tostring(ensureErr),
+      engine = "lwm",
+    }, "ERROR")
+    callback(nil, "本機引擎啟動失敗: " .. tostring(ensureErr))
+    return
+  end
+
+  local port = readSmallFile(config.lwm.portFile)
+  local token = readSmallFile(config.lwm.tokenFile)
+  if not port or not token then
+    callback(nil, "缺 port/token 檔")
+    return
+  end
+
+  local model = hs.settings.get("botrun.lwm.model") or config.lwm.defaultModel
+  local quant = hs.settings.get("botrun.lwm.quant") or config.lwm.defaultQuant
+  lwmLog("port=" .. tostring(port) .. " model=" .. tostring(model) .. " quant=" .. tostring(quant) .. " token_len=" .. tostring(token and #token or 0))
+  local _attrs = hs.fs.attributes(recordingFile)
+  local _fileSize = _attrs and _attrs.size or 0
+  local _txStartEpoch = hs.timer.secondsSinceEpoch()
+  local ext = recordingFile:match("%.([^%./]+)$") or "m4a"
+
+  cloudLog("transcribe_request_start", {
+    file_basename = recordingFile:match("([^/]+)$") or "",
+    file_size = _fileSize,
+    engine = "lwm",
+    lwm_model = model,
+    lwm_quant = quant,
+  })
+
+  -- v1.7.7: 傳 language hint，預設繁中（沿用 config.language="zh"）
+  local lang = config.language or "zh"
+  local url = string.format("http://127.0.0.1:%s/transcribe?model=%s&quant=%s&ext=%s&lang=%s",
+    port, model, quant, ext, lang)
+
+  -- 用 curl --data-binary 上傳；同步用 hs.task fire-and-forget
+  -- jq 路徑沿用既有 helper
+  local jqPath = getJqPath()
+  local cmd = string.format([[
+    curl -sS -X POST --data-binary "@%s" \
+      -H "Authorization: Bearer %s" \
+      -H "Content-Type: application/octet-stream" \
+      "%s"
+  ]], recordingFile, token, url)
+
+  lwmLog("curl cmd preview: POST " .. url)
+  local task = hs.task.new("/bin/bash", function(exitCode, stdout, stderr)
+    local _latency = hs.timer.secondsSinceEpoch() - _txStartEpoch
+    lwmLog("curl exit=" .. tostring(exitCode) .. " stdout_bytes=" .. (stdout and #stdout or 0) .. " stderr_bytes=" .. (stderr and #stderr or 0) .. " latency=" .. string.format("%.2f", _latency) .. "s")
+    if stdout and #stdout > 0 then
+      lwmLog("curl stdout head: " .. stdout:sub(1, 300))
+    end
+    if stderr and #stderr > 0 then
+      lwmLog("curl stderr: " .. stderr:sub(1, 500))
+    end
+    if exitCode ~= 0 then
+      cloudLog("transcribe_failed", {
+        file_basename = recordingFile:match("([^/]+)$") or "",
+        reason = "lwm_curl_nonzero",
+        exit_code = exitCode,
+        latency_s = _latency,
+        stderr_tail = (stderr or ""):sub(-800),
+        engine = "lwm",
+      }, "ERROR")
+      callback(nil, "本機 daemon 連線失敗: " .. (stderr or ""))
+      return
+    end
+
+    -- 解析 JSON 取 .text
+    local parseTask = hs.task.new("/bin/bash", function(_, jsonOut, jsonErr)
+      local text = (jsonOut or ""):gsub("^%s*(.-)%s*$", "%1")
+      lwmLog("jq parsed text_len=" .. tostring(#text) .. " jq_err=" .. tostring(jsonErr or ""):sub(1, 200))
+      if text and text ~= "" and text ~= "null" then
+        cloudLog("transcribe_success", {
+          file_basename = recordingFile:match("([^/]+)$") or "",
+          file_size = _fileSize,
+          latency_s = _latency,
+          text_length = #text,
+          engine = "lwm",
+          lwm_model = model,
+          lwm_quant = quant,
+        })
+        callback(text, nil)
+      else
+        cloudLog("transcribe_failed", {
+          file_basename = recordingFile:match("([^/]+)$") or "",
+          reason = "lwm_empty_text",
+          latency_s = _latency,
+          api_response_tail = (stdout or ""):sub(-1200),
+          engine = "lwm",
+        }, "ERROR")
+        callback(nil, "本機轉錄回傳空文字")
+      end
+    end, {"-c", "echo '" .. stdout:gsub("'", "'\\''") .. "' | " .. jqPath .. " -r '.text // empty'"})
+    parseTask:start()
+  end, {"-c", cmd})
+
+  state.transcribeTask = task
+  task:start()
+end
+
 -- 轉錄動畫控制
 local function startTranscribeAnimation()
   state.transcribeEmojiIndex = 1
@@ -1109,6 +1509,9 @@ local function transcribe(recordingFile, callback)
     return
   end
 
+  -- v1.7.0: 依使用者選擇分流引擎（記憶於 hs.settings）
+  local engine = hs.settings.get("botrun.engine") or "gemini"
+
   -- 設定轉錄狀態
   state.isTranscribing = true
   state.transcribeFile = recordingFile
@@ -1118,6 +1521,8 @@ local function transcribe(recordingFile, callback)
   cloudLog("transcribe_start", {
     file_basename = recordingFile:match("([^/]+)$") or "",
     file_size = _outerAttrs and _outerAttrs.size or 0,
+    engine = engine,
+    lwm_model = engine == "lwm" and (hs.settings.get("botrun.lwm.model") or config.lwm.defaultModel) or nil,
   })
 
   -- 啟動轉錄動畫
@@ -1131,7 +1536,7 @@ local function transcribe(recordingFile, callback)
     unbindCancelHotkey()
   end
 
-  local function onGeminiResult(text, err, isRetry)
+  local function onResult(text, err, isRetry)
     -- 已被取消，忽略回調
     if not state.isTranscribing then return end
 
@@ -1143,6 +1548,7 @@ local function transcribe(recordingFile, callback)
         outer_latency_s = hs.timer.secondsSinceEpoch() - _outerStartEpoch,
         text_length = #text,
         is_retry = isRetry and true or false,
+        engine = engine,
       })
       if not config.keepSuccessfulRecordings then
         os.remove(recordingFile)
@@ -1150,38 +1556,48 @@ local function transcribe(recordingFile, callback)
       convertToTraditional(text, function(traditionalText)
         callback(traditionalText, nil)
       end)
-    elseif not isRetry then
-      -- 第一次失敗，retry 一次
+    elseif not isRetry and engine == "gemini" then
+      -- Gemini：第一次失敗 retry 一次
       print("[波特槌] Gemini 第一次失敗: " .. (err or "未知錯誤") .. "，重試一次...")
       cloudLog("transcribe_retry", {
         file_basename = recordingFile:match("([^/]+)$") or "",
         first_error = err or "unknown",
         outer_elapsed_s = hs.timer.secondsSinceEpoch() - _outerStartEpoch,
+        engine = engine,
       }, "WARNING")
       hs.alert.show("⚠️ Gemini 暫時故障，重試中...", 1.5)
       hs.timer.doAfter(1, function()
-        if not state.isTranscribing then return end  -- 已取消則不重試
+        if not state.isTranscribing then return end
         transcribeWithGemini(recordingFile, function(retryText, retryErr)
-          onGeminiResult(retryText, retryErr, true)
+          onResult(retryText, retryErr, true)
         end)
       end)
     else
-      -- 重試也失敗
+      -- lwm 不重試（daemon 失敗多半是模型/環境問題，retry 無意義）；或 gemini 二次也失敗
       stopTranscribeAnimation()
       finishTranscription()
       cloudLog("transcribe_final_failed", {
         file_basename = recordingFile:match("([^/]+)$") or "",
         last_error = err or "unknown",
         outer_latency_s = hs.timer.secondsSinceEpoch() - _outerStartEpoch,
+        engine = engine,
       }, "ERROR")
       hs.alert.show("❌ 轉錄失敗\n錄音已保留: " .. recordingFile:match("([^/]+)$"), 3)
-      callback(nil, "Gemini 轉錄失敗（含重試）")
+      callback(nil, (engine == "lwm" and "本機轉錄失敗" or "Gemini 轉錄失敗（含重試）"))
     end
   end
 
-  transcribeWithGemini(recordingFile, function(text, err)
-    onGeminiResult(text, err, false)
-  end)
+  -- 引擎分流（OCP：未來新增引擎只需加 elseif）
+  print("[LWM-DEBUG " .. os.date("%H:%M:%S") .. "] dispatch engine=" .. tostring(engine))
+  if engine == "lwm" then
+    transcribeWithLightningWhisperMLX(recordingFile, function(text, err)
+      onResult(text, err, false)
+    end)
+  else
+    transcribeWithGemini(recordingFile, function(text, err)
+      onResult(text, err, false)
+    end)
+  end
 end
 
 -- ========================================
@@ -1348,6 +1764,246 @@ hs.hotkey.bind({}, config.historyTextKey, showTextHistory)
 
 -- F7 檔案歷史選單
 hs.hotkey.bind({}, config.historyFileKey, showFileHistory)
+
+-- ========================================
+-- v1.7.0: menubar 引擎切換選單（記憶最後一次）
+-- ========================================
+
+local function currentEngineSummary()
+  local engine = hs.settings.get("botrun.engine") or "gemini"
+  if engine == "lwm" then
+    local model = hs.settings.get("botrun.lwm.model") or config.lwm.defaultModel
+    return "🔨 lwm:" .. model
+  end
+  return "🔨 gemini"
+end
+
+local engineMenubar = nil
+
+-- Forward declare（v1.7.10：setEngineLwm 會呼叫 lwmPreloadModel，但後者宣告在後面）
+local lwmPreloadModel
+
+local function setEngineGemini()
+  hs.settings.set("botrun.engine", "gemini")
+  hs.alert.show("✅ 已切換到 ☁️ Gemini (雲端)", 1.5)
+  if engineMenubar then engineMenubar:setTitle(currentEngineSummary()) end
+end
+
+local function setEngineLwm(modelKey)
+  hs.settings.set("botrun.engine", "lwm")
+  hs.settings.set("botrun.lwm.model", modelKey)
+  if not hs.settings.get("botrun.lwm.quant") then
+    hs.settings.set("botrun.lwm.quant", config.lwm.defaultQuant)
+  end
+  if engineMenubar then engineMenubar:setTitle(currentEngineSummary()) end
+  -- v1.7.4: 切換到本機 = 自動補齊環境（scripts → pip → daemon），全部 UI 化
+  ensureLwmScriptsDeployed(function(scriptsOk)
+    if not scriptsOk then
+      hs.alert.show("⚠️ 無法部署 daemon 腳本（自我修復失敗，請檢查網路）", 4)
+      return
+    end
+    autoInstallLwm(function(pipOk)
+      if not pipOk then return end
+      hs.alert.show("✅ 已切換到 💻 本機 " .. modelKey .. "\n背景預載 daemon + 模型...", 2)
+      -- 先 ensure daemon，再預載模型
+      hs.task.new("/bin/bash", function(ec, _, _)
+        if ec ~= 0 then return end
+        lwmPreloadModel(modelKey)
+      end, { config.lwm.ctlScript, "ensure" }):start()
+      lwmStartHealthWatchdog()
+    end)
+  end)
+end
+
+-- v1.7.10: 預載模型 + 滾動 emoji 進度（首次會 HF download ~1.5GB）
+function lwmPreloadModel(modelKey)
+  local port = readSmallFile(config.lwm.portFile)
+  local token = readSmallFile(config.lwm.tokenFile)
+  if not port or not token then
+    -- daemon 還沒就緒，0.5 秒後再試
+    hs.timer.doAfter(0.5, function() lwmPreloadModel(modelKey) end)
+    return
+  end
+  local emojis = {"🌐", "📥", "⏬", "📦", "🔧", "✨"}
+  local i = 1
+  local spinner = hs.timer.doEvery(1, function()
+    i = (i % #emojis) + 1
+    hs.alert.show(emojis[i] .. " 載入 " .. modelKey .. " 中...\n首次下載約 1.5GB", 1.2)
+  end)
+  hs.alert.show(emojis[1] .. " 載入 " .. modelKey .. " 中...\n首次下載約 1.5GB", 1.2)
+
+  local cmd = string.format(
+    "curl -s -m 600 -X POST -H 'Authorization: Bearer %s' 'http://127.0.0.1:%s/switch_model?model=%s'",
+    token, port, modelKey
+  )
+  hs.task.new("/bin/bash", function(exitCode, stdout, stderr)
+    spinner:stop()
+    if exitCode == 0 and (stdout or ""):match('"ok": true') then
+      local secs = (stdout or ""):match('"loaded_in_s":%s*([%d%.]+)') or "?"
+      hs.alert.show("✅ " .. modelKey .. " 已就緒（載入 " .. secs .. "s）", 2)
+    else
+      hs.alert.show("⚠️ 模型預載失敗（首次轉錄時會自動重試）\n" .. (stderr or ""):sub(1, 100), 4)
+    end
+  end, {"-c", cmd}):start()
+end
+
+local function buildEngineMenu()
+  local engine = hs.settings.get("botrun.engine") or "gemini"
+  local currentModel = hs.settings.get("botrun.lwm.model") or config.lwm.defaultModel
+  local items = {
+    {
+      title = "☁️ Gemini (雲端)",
+      checked = engine == "gemini",
+      fn = setEngineGemini,
+    },
+    { title = "-" },
+  }
+  for _, m in ipairs(config.lwm.menuModels) do
+    table.insert(items, {
+      title = m.label,
+      checked = engine == "lwm" and currentModel == m.key,
+      fn = function() setEngineLwm(m.key) end,
+    })
+  end
+  table.insert(items, { title = "-" })
+  table.insert(items, {
+    title = "📋 重啟本機 daemon",
+    fn = function()
+      hs.task.new("/bin/bash", function(code, _, _)
+        hs.alert.show(code == 0 and "✅ daemon 已重啟" or "❌ 重啟失敗", 2)
+      end, {config.lwm.ctlScript, "restart"}):start()
+    end,
+  })
+  table.insert(items, {
+    title = "🔧 重新安裝 lightning-whisper-mlx (pip)",
+    fn = function()
+      -- v1.7.4: 強制重裝走進度條 UI（先標記未裝以略過 isLwmInstalled 短路）
+      autoInstallLwm(function(ok)
+        if ok then hs.alert.show("✅ 安裝完成", 2) end
+      end)
+    end,
+  })
+  table.insert(items, { title = "波特槌 v" .. VERSION, disabled = true })
+  return items
+end
+
+engineMenubar = hs.menubar.new()
+print("[LWM-DEBUG] engineMenubar created? " .. tostring(engineMenubar ~= nil))
+if engineMenubar then
+  engineMenubar:setTitle(currentEngineSummary())
+  engineMenubar:setTooltip("波特槌 — 切換語音引擎")
+  engineMenubar:setMenu(buildEngineMenu)
+  print("[LWM-DEBUG] menubar title set: " .. currentEngineSummary())
+end
+
+-- v1.7.9: Daemon health watchdog — 定期 /health，timeout 或失敗就 force restart
+local lwmHealth = {
+  timer = nil,
+  consecutiveFails = 0,
+  lastOk = nil,
+  lastRestart = 0,
+}
+
+local function lwmHealthPing(onResult)
+  local port = readSmallFile(config.lwm.portFile)
+  local token = readSmallFile(config.lwm.tokenFile)
+  if not port or not token then
+    onResult(false, "no_port_or_token")
+    return
+  end
+  local cmd = string.format(
+    "curl -s -m %d -o /dev/null -w '%%{http_code}' -H 'Authorization: Bearer %s' http://127.0.0.1:%s/health",
+    config.lwm.healthCheckTimeout, token, port
+  )
+  hs.task.new("/bin/bash", function(exitCode, stdout, _)
+    if exitCode == 0 and (stdout or ""):match("^200") then
+      onResult(true)
+    else
+      onResult(false, "http_status=" .. tostring(stdout) .. " curl_exit=" .. tostring(exitCode))
+    end
+  end, {"-c", cmd}):start()
+end
+
+local function lwmForceRestart(reason)
+  local now = hs.timer.secondsSinceEpoch()
+  -- 防止 restart loop：30 秒內最多一次
+  if (now - lwmHealth.lastRestart) < 30 then
+    lwmLog("watchdog: 跳過 restart（剛剛已重啟過）reason=" .. tostring(reason))
+    return
+  end
+  lwmHealth.lastRestart = now
+  lwmLog("watchdog: FORCE RESTART reason=" .. tostring(reason))
+  hs.notify.new({title = "🔨 波特槌 watchdog", informativeText = "本機 daemon 卡住，自動重啟中..."}):send()
+  hs.task.new("/bin/bash", function(code, stdout, stderr)
+    if code == 0 then
+      lwmLog("watchdog: restart success")
+      lwmHealth.consecutiveFails = 0
+    else
+      lwmLog("watchdog: restart FAILED exit=" .. tostring(code) .. " stderr=" .. (stderr or ""):sub(1, 200))
+    end
+  end, {config.lwm.ctlScript, "restart"}):start()
+end
+
+local function lwmStartHealthWatchdog()
+  if not config.lwm.autoRestartEnabled then return end
+  if lwmHealth.timer then lwmHealth.timer:stop(); lwmHealth.timer = nil end
+  lwmHealth.timer = hs.timer.doEvery(config.lwm.healthCheckInterval, function()
+    -- 引擎不是 lwm 就不打（省資源；切回時會自動恢復）
+    if (hs.settings.get("botrun.engine") or "gemini") ~= "lwm" then return end
+    -- 轉錄中不打（避免干擾長轉錄）
+    if state.isTranscribing then return end
+    lwmHealthPing(function(ok, err)
+      if ok then
+        lwmHealth.consecutiveFails = 0
+        lwmHealth.lastOk = hs.timer.secondsSinceEpoch()
+      else
+        lwmHealth.consecutiveFails = lwmHealth.consecutiveFails + 1
+        lwmLog("watchdog ping fail #" .. lwmHealth.consecutiveFails .. " err=" .. tostring(err))
+        -- 連續 2 次失敗才 restart（避免短暫網路 hiccup）
+        if lwmHealth.consecutiveFails >= 2 then
+          lwmForceRestart(err)
+        end
+      end
+    end)
+  end)
+  lwmLog("health watchdog 啟動 interval=" .. config.lwm.healthCheckInterval .. "s")
+end
+
+-- 環境自檢（reload 時印一次，立刻看出哪邊缺）
+print("[LWM-DEBUG] === 環境自檢 ===")
+print("[LWM-DEBUG] ctlScript exists: " .. tostring(hs.fs.attributes(config.lwm.ctlScript) ~= nil) .. " (" .. config.lwm.ctlScript .. ")")
+print("[LWM-DEBUG] portFile: " .. tostring(hs.fs.attributes(config.lwm.portFile) ~= nil) .. " (" .. config.lwm.portFile .. ")")
+print("[LWM-DEBUG] tokenFile: " .. tostring(hs.fs.attributes(config.lwm.tokenFile) ~= nil) .. " (" .. config.lwm.tokenFile .. ")")
+print("[LWM-DEBUG] saved engine: " .. tostring(hs.settings.get("botrun.engine")))
+print("[LWM-DEBUG] saved model: " .. tostring(hs.settings.get("botrun.lwm.model")))
+print("[LWM-DEBUG] saved quant: " .. tostring(hs.settings.get("botrun.lwm.quant")))
+
+-- v1.7.3+1.7.4: 升級路徑完整自動化
+-- 1. self-heal scripts（既有使用者 auto-update 後缺 daemon 腳本 → 從 GitHub raw 抓）
+-- 2. 若 engine=lwm 且 LWM 未安裝 → 自動觸發 pip install + 浮動進度條 UI
+ensureLwmScriptsDeployed(function(scriptsOk)
+  print("[LWM-DEBUG] self-heal complete: ok=" .. tostring(scriptsOk))
+  if not scriptsOk then return end
+  local savedEngine = hs.settings.get("botrun.engine")
+  if savedEngine == "lwm" then
+    print("[LWM-DEBUG] saved engine=lwm，檢查 LWM 是否需要自動安裝")
+    isLwmInstalled(function(installed)
+      if installed then
+        print("[LWM-DEBUG] LWM 已安裝，預載 daemon")
+        hs.task.new("/bin/bash", nil, { config.lwm.ctlScript, "ensure" }):start()
+      else
+        print("[LWM-DEBUG] LWM 未安裝，啟動自動安裝（含進度條）")
+        autoInstallLwm(function(ok)
+          if ok then
+            hs.task.new("/bin/bash", nil, { config.lwm.ctlScript, "ensure" }):start()
+          end
+        end)
+      end
+    end)
+    -- v1.7.9: 啟動 health watchdog（每分鐘 /health，連續 2 次失敗自動 restart）
+    lwmStartHealthWatchdog()
+  end
+end)
 
 -- ========================================
 -- 自動更新
