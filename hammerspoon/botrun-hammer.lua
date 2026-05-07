@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.7.10 - Mac 語音轉文字
+  🔨 波特槌 v1.7.11 - Mac 語音轉文字
 
   由 Gemini API 驅動的語音輸入助手
 
@@ -24,7 +24,10 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.7.10"
+local VERSION = "1.7.11"
+
+-- 開機自動啟動 Hammerspoon（v1.7.11）
+pcall(function() hs.autoLaunch(true) end)
 
 -- 目前腳本檔案路徑（用於自動更新）
 local SCRIPT_PATH = debug.getinfo(1, "S").source:match("^@(.+)$")
