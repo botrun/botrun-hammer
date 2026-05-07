@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.7.12 - Mac 語音轉文字
+  🔨 波特槌 v1.7.13 - Mac 語音轉文字
 
   由 Gemini API 驅動的語音輸入助手
 
@@ -11,6 +11,7 @@
   - 轉錄中按 ESC 或 F5 可取消轉錄（錄音檔保留）
   - F6 瀏覽最近 30 筆轉錄文字歷史（選擇後複製到剪貼簿）
   - F7 瀏覽最近 30 個錄音檔案（選擇後在 Finder 顯示）
+  - F8 開啟引擎選單（平時不佔 menubar；選擇後自動關閉）
   - 自動更新：啟動時及每 4 小時檢查 GitHub 最新版本
 
   安裝：
@@ -24,7 +25,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.7.12"
+local VERSION = "1.7.13"
 
 -- 開機自動啟動 Hammerspoon（v1.7.11）
 pcall(function() hs.autoLaunch(true) end)
@@ -65,6 +66,7 @@ local config = {
   hotkey = "F5",
   historyTextKey = "F6",
   historyFileKey = "F7",
+  engineMenuKey = "F8",
 
   -- 歷史紀錄
   historyFile = os.getenv("HOME") .. "/Library/Application Support/botrun-hammer/recordings/history.json",
@@ -1890,14 +1892,19 @@ local function buildEngineMenu()
   return items
 end
 
-engineMenubar = hs.menubar.new()
-print("[LWM-DEBUG] engineMenubar created? " .. tostring(engineMenubar ~= nil))
+-- v1.7.13: 不常駐 menubar（避免上方 bar 干擾），F8 才彈出選單；選完即關
+engineMenubar = hs.menubar.new(false)
+print("[LWM-DEBUG] engineMenubar created (hidden)? " .. tostring(engineMenubar ~= nil))
 if engineMenubar then
-  engineMenubar:setTitle(currentEngineSummary())
-  engineMenubar:setTooltip("波特槌 — 切換語音引擎")
   engineMenubar:setMenu(buildEngineMenu)
-  print("[LWM-DEBUG] menubar title set: " .. currentEngineSummary())
 end
+
+hs.hotkey.bind({}, config.engineMenuKey, function()
+  if not engineMenubar then return end
+  local pt = hs.mouse.absolutePosition()
+  -- 在游標位置彈出引擎選單；點擊任一項後 macOS 會自動關閉
+  engineMenubar:popupMenu(pt)
+end)
 
 -- v1.7.9: Daemon health watchdog — 定期 /health，timeout 或失敗就 force restart
 local lwmHealth = {
@@ -2121,7 +2128,7 @@ migrateLegacyRecordings()
 -- 確保新資料夾存在
 ensureRecordingDir()
 
-hs.alert.show("🔨 波特槌 v" .. VERSION .. " 已啟動\n🎤 F5 語音輸入 | F6 文字歷史 | F7 檔案歷史\n⎋ ESC 取消轉錄", 3)
+hs.alert.show("🔨 波特槌 v" .. VERSION .. " 已啟動\n🎤 F5 語音輸入 | F6 文字歷史 | F7 檔案歷史 | F8 引擎選單\n⎋ ESC 取消轉錄", 3)
 
 -- 檢查 Accessibility 權限
 local function checkAccessibility()
