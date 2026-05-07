@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.7.13 - Mac 語音轉文字
+  🔨 波特槌 v1.7.14 - Mac 語音轉文字
 
   由 Gemini API 驅動的語音輸入助手
 
@@ -25,7 +25,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.7.13"
+local VERSION = "1.7.14"
 
 -- 開機自動啟動 Hammerspoon（v1.7.11）
 pcall(function() hs.autoLaunch(true) end)
@@ -1870,29 +1870,30 @@ local function buildEngineMenu()
       fn = function() setEngineLwm(m.key) end,
     })
   end
+  -- v1.7.14: 不再露出「重啟 daemon / 重新安裝 pip」——
+  -- 這兩件事由 health watchdog（v1.7.9）+ 切換引擎 auto-install（v1.7.4）負責。
+  -- 工程除錯仍可透過 `hs -c 'botrunHammer.restartDaemon()'` 等隱藏 API 觸發。
   table.insert(items, { title = "-" })
-  table.insert(items, {
-    title = "📋 重啟本機 daemon",
-    fn = function()
-      hs.task.new("/bin/bash", function(code, _, _)
-        hs.alert.show(code == 0 and "✅ daemon 已重啟" or "❌ 重啟失敗", 2)
-      end, {config.lwm.ctlScript, "restart"}):start()
-    end,
-  })
-  table.insert(items, {
-    title = "🔧 重新安裝 lightning-whisper-mlx (pip)",
-    fn = function()
-      -- v1.7.4: 強制重裝走進度條 UI（先標記未裝以略過 isLwmInstalled 短路）
-      autoInstallLwm(function(ok)
-        if ok then hs.alert.show("✅ 安裝完成", 2) end
-      end)
-    end,
-  })
   table.insert(items, { title = "波特槌 v" .. VERSION, disabled = true })
   return items
 end
 
--- v1.7.13: 不常駐 menubar（避免上方 bar 干擾），F8 才彈出選單；選完即關
+-- v1.7.14: 隱藏 debug API（不出現在選單，但可從 hs CLI 呼叫）
+_G.botrunHammer = _G.botrunHammer or {}
+_G.botrunHammer.restartDaemon = function()
+  hs.task.new("/bin/bash", function(code, _, stderr)
+    print("[botrunHammer.restartDaemon] exit=" .. tostring(code) .. " stderr=" .. tostring(stderr or ""):sub(1, 200))
+  end, {config.lwm.ctlScript, "restart"}):start()
+  return "restarting…"
+end
+_G.botrunHammer.reinstallLwm = function()
+  autoInstallLwm(function(ok)
+    print("[botrunHammer.reinstallLwm] ok=" .. tostring(ok))
+  end)
+  return "installing…"
+end
+
+-- v1.7.14: 不常駐 menubar（避免上方 bar 干擾），F8 才彈出選單；選完即關
 engineMenubar = hs.menubar.new(false)
 print("[LWM-DEBUG] engineMenubar created (hidden)? " .. tostring(engineMenubar ~= nil))
 if engineMenubar then
