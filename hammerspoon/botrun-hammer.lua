@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.7.11 - Mac 語音轉文字
+  🔨 波特槌 v1.7.12 - Mac 語音轉文字
 
   由 Gemini API 驅動的語音輸入助手
 
@@ -24,7 +24,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.7.11"
+local VERSION = "1.7.12"
 
 -- 開機自動啟動 Hammerspoon（v1.7.11）
 pcall(function() hs.autoLaunch(true) end)
@@ -1988,24 +1988,25 @@ ensureLwmScriptsDeployed(function(scriptsOk)
   print("[LWM-DEBUG] self-heal complete: ok=" .. tostring(scriptsOk))
   if not scriptsOk then return end
   local savedEngine = hs.settings.get("botrun.engine")
-  if savedEngine == "lwm" then
-    print("[LWM-DEBUG] saved engine=lwm，檢查 LWM 是否需要自動安裝")
-    isLwmInstalled(function(installed)
-      if installed then
-        print("[LWM-DEBUG] LWM 已安裝，預載 daemon")
-        hs.task.new("/bin/bash", nil, { config.lwm.ctlScript, "ensure" }):start()
-      else
-        print("[LWM-DEBUG] LWM 未安裝，啟動自動安裝（含進度條）")
-        autoInstallLwm(function(ok)
-          if ok then
-            hs.task.new("/bin/bash", nil, { config.lwm.ctlScript, "ensure" }):start()
-          end
-        end)
-      end
-    end)
-    -- v1.7.9: 啟動 health watchdog（每分鐘 /health，連續 2 次失敗自動 restart）
-    lwmStartHealthWatchdog()
-  end
+  -- v1.7.11: 不論目前引擎，只要 LWM 已安裝就預載 daemon（開機自動啟動本機 large-v3-turbo）
+  -- 引擎=lwm 且未安裝 → 自動觸發安裝；其他情況不打擾
+  isLwmInstalled(function(installed)
+    if installed then
+      print("[LWM-DEBUG] LWM 已安裝，開機預載 daemon（large-v3-turbo）")
+      hs.task.new("/bin/bash", nil, { config.lwm.ctlScript, "ensure" }):start()
+      lwmStartHealthWatchdog()
+    elseif savedEngine == "lwm" then
+      print("[LWM-DEBUG] engine=lwm 但 LWM 未安裝，啟動自動安裝（含進度條）")
+      autoInstallLwm(function(ok)
+        if ok then
+          hs.task.new("/bin/bash", nil, { config.lwm.ctlScript, "ensure" }):start()
+          lwmStartHealthWatchdog()
+        end
+      end)
+    else
+      print("[LWM-DEBUG] LWM 未安裝且引擎非 lwm，跳過預載")
+    end
+  end)
 end)
 
 -- ========================================
