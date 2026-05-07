@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.7.14 - Mac 語音轉文字
+  🔨 波特槌 v1.7.15 - Mac 語音轉文字
 
   由 Gemini API 驅動的語音輸入助手
 
@@ -9,9 +9,7 @@
   - 轉錄文字貼到游標位置
   - 再按 F5 停止錄音
   - 轉錄中按 ESC 或 F5 可取消轉錄（錄音檔保留）
-  - F6 瀏覽最近 30 筆轉錄文字歷史（選擇後複製到剪貼簿）
-  - F7 瀏覽最近 30 個錄音檔案（選擇後在 Finder 顯示）
-  - F8 開啟引擎選單（平時不佔 menubar；選擇後自動關閉）
+  - F6 統一選單：引擎切換 + 文字歷史 + 錄音檔案（v1.7.15 起合併原 F6/F7/F8）
   - 自動更新：啟動時及每 4 小時檢查 GitHub 最新版本
 
   安裝：
@@ -25,7 +23,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.7.14"
+local VERSION = "1.7.15"
 
 -- 開機自動啟動 Hammerspoon（v1.7.11）
 pcall(function() hs.autoLaunch(true) end)
@@ -64,9 +62,7 @@ local config = {
 
   -- 快捷鍵
   hotkey = "F5",
-  historyTextKey = "F6",
-  historyFileKey = "F7",
-  engineMenuKey = "F8",
+  historyTextKey = "F6",  -- v1.7.15: 統一選單入口（合併原 F6/F7/F8）
 
   -- 歷史紀錄
   historyFile = os.getenv("HOME") .. "/Library/Application Support/botrun-hammer/recordings/history.json",
@@ -1764,11 +1760,8 @@ _G.botrunHammerCurrentFile = function() return state.currentRecordingFile end
 _G.botrunHammerTranscribeFile = function() return state.transcribeFile end
 _G.botrunHammerHistoryFile = function() return config.historyFile end
 
--- F6 文字歷史選單
-hs.hotkey.bind({}, config.historyTextKey, showTextHistory)
-
--- F7 檔案歷史選單
-hs.hotkey.bind({}, config.historyFileKey, showFileHistory)
+-- v1.7.15: F6 統一選單（合併原 F6 文字歷史 + F7 檔案歷史 + F8 引擎切換）
+-- 舊的 F7 / F8 hotkey 不再綁定，使用者只需記憶 F6
 
 -- ========================================
 -- v1.7.0: menubar 引擎切換選單（記憶最後一次）
@@ -1870,6 +1863,16 @@ local function buildEngineMenu()
       fn = function() setEngineLwm(m.key) end,
     })
   end
+  -- v1.7.15: 合併文字歷史 / 錄音檔案進來，使用者只需記憶 F6
+  table.insert(items, { title = "-" })
+  table.insert(items, {
+    title = "📝 文字歷史…",
+    fn = function() showTextHistory() end,
+  })
+  table.insert(items, {
+    title = "🎵 錄音檔案…",
+    fn = function() showFileHistory() end,
+  })
   -- v1.7.14: 不再露出「重啟 daemon / 重新安裝 pip」——
   -- 這兩件事由 health watchdog（v1.7.9）+ 切換引擎 auto-install（v1.7.4）負責。
   -- 工程除錯仍可透過 `hs -c 'botrunHammer.restartDaemon()'` 等隱藏 API 觸發。
@@ -1878,7 +1881,7 @@ local function buildEngineMenu()
   return items
 end
 
--- v1.7.14: 隱藏 debug API（不出現在選單，但可從 hs CLI 呼叫）
+-- v1.7.15: 隱藏 debug API（不出現在選單，但可從 hs CLI 呼叫）
 _G.botrunHammer = _G.botrunHammer or {}
 _G.botrunHammer.restartDaemon = function()
   hs.task.new("/bin/bash", function(code, _, stderr)
@@ -1893,17 +1896,17 @@ _G.botrunHammer.reinstallLwm = function()
   return "installing…"
 end
 
--- v1.7.14: 不常駐 menubar（避免上方 bar 干擾），F8 才彈出選單；選完即關
+-- v1.7.15: 不常駐 menubar（避免上方 bar 干擾），F6 統一選單彈出；選完即關
 engineMenubar = hs.menubar.new(false)
 print("[LWM-DEBUG] engineMenubar created (hidden)? " .. tostring(engineMenubar ~= nil))
 if engineMenubar then
   engineMenubar:setMenu(buildEngineMenu)
 end
 
-hs.hotkey.bind({}, config.engineMenuKey, function()
+-- v1.7.15: F6 = 統一選單入口（合併原 F6/F7/F8）
+hs.hotkey.bind({}, config.historyTextKey, function()
   if not engineMenubar then return end
   local pt = hs.mouse.absolutePosition()
-  -- 在游標位置彈出引擎選單；點擊任一項後 macOS 會自動關閉
   engineMenubar:popupMenu(pt)
 end)
 
@@ -2129,7 +2132,7 @@ migrateLegacyRecordings()
 -- 確保新資料夾存在
 ensureRecordingDir()
 
-hs.alert.show("🔨 波特槌 v" .. VERSION .. " 已啟動\n🎤 F5 語音輸入 | F6 文字歷史 | F7 檔案歷史 | F8 引擎選單\n⎋ ESC 取消轉錄", 3)
+hs.alert.show("🔨 波特槌 v" .. VERSION .. " 已啟動\n🎤 F5 語音輸入 | F6 統一選單（引擎/歷史/檔案）\n⎋ ESC 取消轉錄", 3)
 
 -- 檢查 Accessibility 權限
 local function checkAccessibility()
@@ -2181,7 +2184,7 @@ checkDependencies()
 -- 啟動自動更新
 startAutoUpdate()
 
-print("[🔨 波特槌 v" .. VERSION .. "] 模組已載入（Gemini API｜F6 文字歷史｜F7 檔案歷史｜自動更新）")
+print("[🔨 波特槌 v" .. VERSION .. "] 模組已載入（Gemini API｜F6 統一選單｜自動更新）")
 
 -- v1.6.8+：啟動時送一次「load」事件，確認雲端日誌通路有打通
 cloudLog("load", { script_path = SCRIPT_PATH })
