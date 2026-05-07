@@ -24,10 +24,18 @@ VENV_DIR="$CONFIG_DIR/venv"
 VENV_PY="$VENV_DIR/bin/python"
 
 # 系統 Python：建 venv 用；不直接拿來跑 daemon
+# v1.7.16: 跳過 uv-managed Python（base_prefix 寫死 /install，建 venv 會壞）
 SYSTEM_PYTHON="${LWM_PYTHON:-}"
 if [[ -z "$SYSTEM_PYTHON" ]]; then
   for cand in python3.12 python3.11 python3.10 python3; do
     if command -v "$cand" >/dev/null 2>&1; then
+      resolved=$(command -v "$cand")
+      # 解 symlink 看真實路徑
+      real=$(readlink -f "$resolved" 2>/dev/null || python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$resolved" 2>/dev/null || echo "$resolved")
+      # 排除 uv 管理的 Python（路徑含 /uv/python/）
+      if [[ "$real" == *"/uv/python/"* ]] || [[ "$resolved" == *"/.local/bin/"* && "$real" == *"/uv/"* ]]; then
+        continue
+      fi
       SYSTEM_PYTHON="$cand"; break
     fi
   done

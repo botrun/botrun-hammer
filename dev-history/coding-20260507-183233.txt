@@ -1,0 +1,41 @@
+# 2026-05-07 18:32:33 (台灣時間)
+
+## 任務
+debug：使用者反映安裝 whisper v3 turbo 失敗。
+
+## 根因
+`scripts/lwm_daemon_ctl.sh` 偵測 SYSTEM_PYTHON 時，按
+`python3.12 → python3.11 → python3.10 → python3` 順序找到的 `python3.11`，實際上指向
+`/Users/chialolee/.local/bin/python3.11 → uv 管理的
+~/.local/share/uv/python/cpython-3.11.13-macos-aarch64-none/bin/python3.11`。
+
+uv 內部 Python 的 `sys.base_prefix` 寫死成 `/install`（uv 安裝期路徑），用這顆
+Python 建出來的 venv 雖然能建立，但執行 `pip install` 時會：
+
+```
+Could not find platform independent libraries <prefix>
+sys.base_prefix = '/install'
+ModuleNotFoundError: No module named 'encodings'
+Fatal Python error: init_fs_encoding
+```
+
+→ pip 完全跑不起來，安裝 mlx-whisper（含 large-v3-turbo 模型支援）失敗。
+
+## 地雷
+1. `command -v pythonX.Y` 找到的可能是 uv / pyenv / asdf 的 shim，不是 system Python。
+2. uv-managed Python 不能拿來建 venv 給其他工具用 —— base_prefix 路徑是 uv 內部 sandbox。
+3. 偵測順序「具體版本優先」反而踩雷，因為使用者 PATH 上具體版本通常是 toolchain manager 安裝。
+4. 錯誤訊息出現在 `pip install` 而不是 `python -m venv`，誤導以為 pip / 套件問題。
+
+## 修法（v1.7.16 ctl 改動）
+偵測 candidate 後 `readlink -f` 看真實路徑，若含 `/uv/python/` 就跳過。
+
+## 修復步驟
+1. 改 `scripts/lwm_daemon_ctl.sh` 加 uv-shim 過濾。
+2. `rm -rf ~/.botrun-hammer/venv` 砍壞掉的 venv。
+3. `bash scripts/lwm_daemon_ctl.sh install` —— 這次抓到 framework Python3 (3.13)，安裝成功。
+4. `restart` 後 daemon 起來：`running pid=72844 port=18120`。
+
+## 跨專案教訓
+任何「找系統 Python 建 venv」的腳本都應該過濾 toolchain manager 的 shim
+（uv / pyenv / asdf / conda），否則 venv 看似建成但執行時崩。
