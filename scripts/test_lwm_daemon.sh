@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 波特槌 LWM daemon 煙測
 # 階段 A：health / auth / 404（不需模型）
-# 階段 B：transcribe 30s 合成 wav（需要 lightning-whisper-mlx 已安裝）
+# 階段 B：transcribe 30s 合成 wav（需要 mlx-whisper 已安裝）
 
 set -euo pipefail
 
@@ -67,8 +67,8 @@ echo "PASS"
 
 echo
 echo "=== Stage B: 真實轉錄（30s 合成 wav）==="
-if ! "$PYTHON_BIN" -c "import lightning_whisper_mlx" 2>/dev/null; then
-  echo "SKIP: lightning_whisper_mlx 未安裝（執行 scripts/lwm_daemon_ctl.sh install 後再跑）"
+if ! "$PYTHON_BIN" -c "import mlx_whisper" 2>/dev/null; then
+  echo "SKIP: mlx_whisper 未安裝（執行 scripts/lwm_daemon_ctl.sh install 後再跑）"
   curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/shutdown" >/dev/null || true
   echo
   echo "=== ALL STAGE A PASSED ==="

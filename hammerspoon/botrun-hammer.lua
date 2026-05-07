@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.7.15 - Mac 語音轉文字
+  🔨 波特槌 v1.8.0 - Mac 語音轉文字
 
   由 Gemini API 驅動的語音輸入助手
 
@@ -23,7 +23,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.7.15"
+local VERSION = "1.8.0"
 
 -- 開機自動啟動 Hammerspoon（v1.7.11）
 pcall(function() hs.autoLaunch(true) end)
@@ -68,14 +68,14 @@ local config = {
   historyFile = os.getenv("HOME") .. "/Library/Application Support/botrun-hammer/recordings/history.json",
   maxHistory = 30,
 
-  -- v1.7.0: 本機 STT 引擎（lightning-whisper-mlx daemon）
+  -- v1.7.0: 本機 STT 引擎（mlx-whisper daemon）
   lwm = {
     ctlScript = os.getenv("HOME") .. "/.botrun-hammer/scripts/lwm_daemon_ctl.sh",
     portFile  = os.getenv("HOME") .. "/.botrun-hammer/lwm.port",
     tokenFile = os.getenv("HOME") .. "/.botrun-hammer/lwm.token",
     -- v1.7.9: 改用 mlx-whisper backend，預設 large-v3-turbo（多語、約 large-v3 的 8 倍速）
     defaultModel = "large-v3-turbo",
-    -- v1.7.6: lightning-whisper-mlx 0.0.10 + mlx 0.31.2 的 4bit 路徑壞掉
+    -- v1.7.6: mlx 0.31.2 的 4bit 路徑壞掉
     -- (QuantizedLinear.quantize_module 不存在)，預設 none 直到上游修復
     defaultQuant = "none",
     -- v1.7.10: KISS — 只露 turbo 一個本機選項，避免使用者選擇焦慮
@@ -1050,7 +1050,7 @@ local function transcribeWithGemini(recordingFile, callback)
 end
 
 -- ========================================
--- v1.7.0: 本機 STT — lightning-whisper-mlx daemon
+-- v1.7.0: 本機 STT — mlx-whisper daemon
 -- ========================================
 
 local function lwmLog(msg)
@@ -1152,7 +1152,7 @@ local function isLwmInstalled(callback)
   -- v1.7.5: 改用 venv 內 python 偵測
   local venvPy = os.getenv("HOME") .. "/.botrun-hammer/venv/bin/python"
   local probe = string.format(
-    "test -x %q && %q -c 'import lightning_whisper_mlx' 2>/dev/null",
+    "test -x %q && %q -c 'import mlx_whisper' 2>/dev/null",
     venvPy, venvPy
   )
   local task = hs.task.new("/bin/bash", function(exitCode, _, _)
@@ -1199,7 +1199,7 @@ local function autoInstallLwm(onDone)
       return
     end
 
-    lwmProgress:update(2, "下載 lightning-whisper-mlx 與依賴（約 1GB）…")
+    lwmProgress:update(2, "下載 mlx-whisper 與依賴（約 1GB）…")
 
     local installTask
     installTask = hs.task.new("/bin/bash",

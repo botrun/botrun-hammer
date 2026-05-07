@@ -122,10 +122,10 @@ fi
 echo -e "${GREEN}✅ Lua 腳本已部署${NC}"
 
 # ========================================
-# v1.7.0: 部署本機 STT daemon scripts (lightning-whisper-mlx)
+# v1.7.0: 部署本機 STT daemon scripts (mlx-whisper)
 # ========================================
 
-echo "📝 部署本機 STT daemon 腳本（lightning-whisper-mlx）..."
+echo "📝 部署本機 STT daemon 腳本（mlx-whisper）..."
 LWM_SCRIPT_DIR="$BOTRUN_DIR/scripts"
 mkdir -p "$LWM_SCRIPT_DIR"
 
@@ -140,14 +140,22 @@ else
 fi
 chmod +x "$LWM_SCRIPT_DIR/lwm_daemon.py" "$LWM_SCRIPT_DIR/lwm_daemon_ctl.sh" 2>/dev/null || true
 
-# Python 偵測（不強裝 lightning-whisper-mlx；首次選本機引擎時 lazy install）
-if command -v python3 >/dev/null 2>&1; then
-    PY_VER=$(python3 -c 'import sys; print("%d.%d"%sys.version_info[:2])' 2>/dev/null || echo "?")
-    echo -e "${GREEN}✅ Python $PY_VER 已就緒${NC}（本機引擎可選）"
-    echo "   首次切換到本機引擎時，選單會自動執行 pip install lightning-whisper-mlx"
+# v1.8.0: 預先確保 uv 可用（同事不需要懂 python3/venv/PEP 668/brew python）
+# uv 自管 standalone Python 3.12 → brew 升版完全不影響 venv
+echo "🔍 檢查 uv（Python 環境管理工具）..."
+if ! command -v uv >/dev/null 2>&1 && [[ ! -x "$HOME/.local/bin/uv" ]]; then
+    echo "⚠️  uv 未安裝，自 astral.sh 下載中（< 5 秒）..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh < /dev/null
+fi
+if [[ -x "$HOME/.local/bin/uv" ]]; then
+    export PATH="$HOME/.local/bin:$PATH"
+fi
+if command -v uv >/dev/null 2>&1; then
+    echo -e "${GREEN}✅ uv 已就緒（$(uv --version)）${NC}"
+    echo "   首次切換到本機引擎時，選單會自動執行 uv pip install mlx-whisper"
 else
-    echo -e "${YELLOW:-}⚠️  未找到 python3，本機引擎不可用（雲端 Gemini 仍正常運作）${NC:-}"
-    echo "   如需本機引擎：brew install python@3.12 後重執行 install.sh"
+    echo -e "${YELLOW}⚠️  uv 安裝失敗（網路問題？），本機引擎不可用（雲端 Gemini 仍正常運作）${NC}"
+    echo "   手動安裝：curl -LsSf https://astral.sh/uv/install.sh | sh"
 fi
 
 # ========================================

@@ -37,6 +37,7 @@ scripts/*
 !scripts/lwm_daemon.py
 !scripts/lwm_daemon_ctl.sh
 !scripts/test_lwm_daemon.sh
+!scripts/test_uv_install.sh
 
 # 日誌
 *.log

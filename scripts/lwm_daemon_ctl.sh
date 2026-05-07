@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 波特槌 — lightning-whisper-mlx daemon 控制腳本
+# 波特槌 — mlx-whisper daemon 控制腳本
 #
 # 用法：
 #   lwm_daemon_ctl.sh start    # 背景啟動（若已在跑則不重複起）
@@ -7,7 +7,7 @@
 #   lwm_daemon_ctl.sh restart
 #   lwm_daemon_ctl.sh status   # 0=running 1=down
 #   lwm_daemon_ctl.sh ensure   # 沒在跑就啟動（給 lua 呼叫）
-#   lwm_daemon_ctl.sh install  # pip install lightning-whisper-mlx
+#   lwm_daemon_ctl.sh install  # pip install mlx-whisper
 
 set -euo pipefail
 
@@ -20,33 +20,48 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DAEMON_PY="$SCRIPT_DIR/lwm_daemon.py"
 
 # v1.7.5: 用獨立 venv 避開 PEP 668（Homebrew Python externally-managed）
+# v1.8.0: 改用 uv 自管 standalone Python，避開 brew Python 升版打爆 venv
 VENV_DIR="$CONFIG_DIR/venv"
 VENV_PY="$VENV_DIR/bin/python"
 
-# 系統 Python：建 venv 用；不直接拿來跑 daemon
-# v1.7.16: 跳過 uv-managed Python（base_prefix 寫死 /install，建 venv 會壞）
-SYSTEM_PYTHON="${LWM_PYTHON:-}"
-if [[ -z "$SYSTEM_PYTHON" ]]; then
-  for cand in python3.12 python3.11 python3.10 python3; do
-    if command -v "$cand" >/dev/null 2>&1; then
-      resolved=$(command -v "$cand")
-      # 解 symlink 看真實路徑
-      real=$(readlink -f "$resolved" 2>/dev/null || python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$resolved" 2>/dev/null || echo "$resolved")
-      # 排除 uv 管理的 Python（路徑含 /uv/python/）
-      if [[ "$real" == *"/uv/python/"* ]] || [[ "$resolved" == *"/.local/bin/"* && "$real" == *"/uv/"* ]]; then
-        continue
-      fi
-      SYSTEM_PYTHON="$cand"; break
-    fi
-  done
-fi
+# v1.8.0: 不再用 system python 偵測 — uv venv 直接用 uv-managed standalone interpreter，
+# 完全避開 v1.7.16 那個「找到 uv shim 建 venv 後 base_prefix=/install 導致 pip 崩」的雷
+# （ChialoLee 2026-05-07 18:32 在另一台機器踩到的真實 case，就是 v1.8.0 想根治的問題）
 
-# 給 daemon 用的 python：venv 優先，fallback 系統
-if [[ -x "$VENV_PY" ]]; then
-  PYTHON_BIN="$VENV_PY"
-else
-  PYTHON_BIN="$SYSTEM_PYTHON"
-fi
+# uv 路徑（未在 PATH 時 fallback 至 ~/.local/bin）
+ensure_uv_in_path() {
+  if command -v uv >/dev/null 2>&1; then return 0; fi
+  if [[ -x "$HOME/.local/bin/uv" ]]; then
+    export PATH="$HOME/.local/bin:$PATH"
+    return 0
+  fi
+  return 1
+}
+
+# 安裝 uv（沒裝就裝；KISS，無 brew/pip 介入）
+ensure_uv_installed() {
+  if ensure_uv_in_path; then return 0; fi
+  echo "[uv] 未安裝，自 astral.sh 下載中..."
+  if curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1; then
+    export PATH="$HOME/.local/bin:$PATH"
+    ensure_uv_in_path
+    return $?
+  fi
+  return 1
+}
+
+# 偵測既有 venv 是否為 uv 管理（symlink 指向 ~/.local/share/uv/python/...）
+is_uv_managed_venv() {
+  # uv venv: bin/python 為絕對 symlink，指向 ~/.local/share/uv/python/cpython-X.Y.Z-.../bin/pythonX.Y
+  local link
+  link=$(readlink "$VENV_DIR/bin/python" 2>/dev/null || echo "")
+  [[ "$link" == *"/uv/python/"* ]] || [[ "$link" == *"share/uv/"* ]]
+}
+
+# Python 偵測（只用於 daemon 執行；建 venv 一律走 uv）
+ensure_uv_in_path || true
+PYTHON_BIN="$VENV_PY"
+[[ -x "$PYTHON_BIN" ]] || PYTHON_BIN=""
 
 mkdir -p "$CONFIG_DIR"
 
@@ -75,21 +90,18 @@ cmd_start() {
     cmd_status
     return 0
   fi
-  if [[ -z "$PYTHON_BIN" ]]; then
-    echo "ERROR: python3 not found. Install Python 3.10+." >&2
-    return 2
-  fi
   if [[ ! -x "$VENV_PY" ]]; then
     echo "ERROR: venv not yet created. Run: $0 install" >&2
     return 6
   fi
+  PYTHON_BIN="$VENV_PY"
   if ! "$PYTHON_BIN" -c "import mlx_whisper" 2>/dev/null; then
     echo "ERROR: mlx_whisper not installed in venv. Run: $0 install" >&2
     return 3
   fi
   echo "starting daemon (python=$PYTHON_BIN)..."
   # v1.7.6: Hammerspoon spawn 的 daemon 預設 PATH 不含 /opt/homebrew/bin，
-  # 但 lightning-whisper-mlx 內部會 subprocess 呼叫 ffmpeg —— 補進去
+  # 但 mlx-whisper 內部會 subprocess 呼叫 ffmpeg —— 補進去
   export PATH="/opt/homebrew/bin:/usr/local/bin:/opt/local/bin:$PATH"
   nohup "$PYTHON_BIN" "$DAEMON_PY" >>"$LOG_FILE" 2>&1 &
   local pid=$!
@@ -139,26 +151,35 @@ cmd_ensure() {
 }
 
 cmd_install() {
-  if [[ -z "$SYSTEM_PYTHON" ]]; then
-    echo "ERROR: python3 not found. Install with: brew install python@3.12" >&2
+  # v1.8.0: uv-first，標準 Python 3.12 standalone interpreter，避 brew 升版斷 venv
+  if ! ensure_uv_installed; then
+    echo "ERROR: uv 安裝失敗（網路問題？）。手動安裝: curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
     return 2
   fi
-  # v1.7.5: 用 venv 安裝避開 PEP 668（Homebrew Python externally-managed-environment）
+  echo "[1/4] uv: $(uv --version)"
+
+  # 既有非 uv-managed venv（舊版 brew python 建的）→ 備份後重建
+  if [[ -d "$VENV_DIR" ]] && ! is_uv_managed_venv; then
+    local backup="${VENV_DIR}.bak-$(date +%Y%m%d%H%M%S)"
+    echo "[migrate] 既有 venv 非 uv-managed（brew python 升版會斷），備份至 $backup"
+    mv "$VENV_DIR" "$backup"
+  fi
+
   if [[ ! -x "$VENV_PY" ]]; then
-    echo "[1/3] 建立 venv: $VENV_DIR (使用 $SYSTEM_PYTHON)..."
-    "$SYSTEM_PYTHON" -m venv "$VENV_DIR"
+    echo "[2/4] uv venv --python 3.12 $VENV_DIR..."
+    uv venv --python 3.12 "$VENV_DIR"
   else
-    echo "[1/3] venv 已存在: $VENV_DIR"
+    echo "[2/4] venv 已是 uv-managed: $VENV_DIR"
   fi
   if [[ ! -x "$VENV_PY" ]]; then
     echo "ERROR: venv 建立失敗" >&2
     return 5
   fi
-  echo "[2/3] 升級 pip..."
-  "$VENV_PY" -m pip install --upgrade pip wheel setuptools 2>&1 | grep -E "^(Collecting|Downloading|Installing|Successfully|ERROR)" || true
-  echo "[3/3] Collecting mlx-whisper（含 mlx + transformers，約 1GB，1-3 分鐘）..."
-  "$VENV_PY" -m pip install mlx-whisper
-  echo "驗證: $VENV_PY -c 'import mlx_whisper'"
+
+  echo "[3/4] uv pip install mlx-whisper（含 mlx + torch，首次約 1 分鐘）..."
+  uv pip install --python "$VENV_PY" mlx-whisper
+
+  echo "[4/4] 驗證 import..."
   "$VENV_PY" -c "import mlx_whisper; print('Successfully installed and importable')"
 }
 

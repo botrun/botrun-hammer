@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-波特槌 — lightning-whisper-mlx HTTP daemon
+波特槌 — mlx-whisper HTTP daemon
 
 設計原則：
   KISS  : Python stdlib http.server，無額外 web framework 依賴

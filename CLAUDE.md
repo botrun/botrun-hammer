@@ -1,6 +1,6 @@
 ## 波特槌版本規則
 
-**當前版本: 1.7.15**
+**當前版本: 1.8.0**
 
 ### 永久規則
 每次修改 `hammerspoon/botrun-hammer.lua` 時，必須遞增版本號碼：
@@ -24,6 +24,7 @@
 - [⭐ 長錄音指數驗證測試（v1.6.7）](docs/2026-05-01_long-recording-exponential-test.md) — 合成 fMP4 30 秒驗 4→300 分鐘 8 點、heartbeat logger、scripts/synth_validate.sh + scripts/realtime_drive.sh、hs.ipc 驅動 F5 自動化（[DAG](docs/2026-05-01_060814_long-recording-exponential-test-DAG.md)）
 - [⭐⭐ curl|bash 分發工具的雲端日誌（v1.6.8）](docs/2026-05-01_cloud-logging-curl-bash.md) — Cloud Run logsink + Bearer token 烘進 install.sh、Secret Manager 可 rotate、alpine image 40MB、多層機器識別（hostname + ComputerName + persisted UUID + os_user）、lua hs.task curl async fire-and-forget、隱私邊界（metadata 上雲不送內容）。8 條跨專案教訓
 - [⭐⭐⭐ E2E 雲端 Telemetry — 涵蓋成功+失敗+原因（v1.6.9）](docs/2026-05-01_e2e-cloud-telemetry.md) — 測試邊界要劃在使用者價值不是技術組件（record→ffprobe→transcribe→驗證 history.text 非空）；雲端日誌 16 種事件含 transcribe_failed/cancelled/timeout 等失敗路徑及 api_response_tail/stderr_tail 除錯片段；recording_finalized 必延遲 3 秒等 ffmpeg flush；async 完成用 polling busy-flag 不要 sleep 固定時間；測試永不 toggle 取消（[DAG](docs/2026-05-01_065708_e2e-transcribe-cloud-telemetry-DAG.md)）
+- [⭐⭐⭐ v1.8.0 uv 自管 Python — 同事 venv 相容性根治解](docs/2026-05-08_uv-venv-compat.md) — 把 brew python + `python -m venv` 換成 uv（standalone CPython 自管），brew 升版完全不影響 venv；既有非 uv venv 自動備份重建（不需同事手動清理）；install.sh 預先裝 uv 不 lazy；7 條跨專案鐵律（L1 brew 不是穩定平台 / L2 venv symlink 是 ABI 鎖 / L3 readlink 比版本比對可靠 / L4 自動 migrate / L5 預先裝 / L6 uv venv 結構 python 為主 / L7 codified E2E ＞ SOP）。配套 `scripts/test_uv_install.sh` 8 步全鏈 E2E 驗證；reuse 文章在 botrun-horse。
 - [⭐ v1.7.14 隱藏「重啟 daemon / 重新安裝 pip」內務按鈕](docs/2026-05-07_151019_v1.7.14-hide-internal-controls-DAG.md) — 自動化做了就該把對應手動 UI 撤掉，否則按鈕反向暗示自動化不可靠；工程除錯改走 `_G.botrunHammer.*` + `hs -c`，UI 對使用者乾淨；選單命名是產品語言試紙（daemon/pip 詞彙洩露技術棧）
 - [v1.7.12 升級指南 — 啟用本機 large-v3-turbo（0.5 秒轉錄）](docs/2026-05-07_v1.7.12-upgrade-turbo.md) — curl|bash 一鍵升級；自動同步 lua + lwm 腳本，但 `lightning-whisper-mlx` 與模型權重採 lazy install（避免雲端使用者吃 1GB）；4 步驟啟用 + 驗證指令
 - [⭐⭐ 本機 STT — lightning-whisper-mlx daemon（v1.7.0）](docs/2026-05-06_lightning-whisper-mlx-daemon.md) — 本機 Whisper 引擎以 stdlib http.server daemon 模式常駐記憶體（KISS，無 FastAPI）；模型 LRU(1) + 切換瞬間；`bind 127.0.0.1` + Bearer token；port 0 須從 `server_address[1]` 讀回避免寫入 0；`hs.settings` 持久化引擎/模型/量化；menubar 露三個有意義模型；雲端 telemetry 加 `engine`/`lwm_model` 欄位但不送內容；lazy install 不強迫雲端使用者吃 1GB 依賴；OCP dispatcher 未來加引擎只需 elseif（[DAG](docs/2026-05-06_203738_lightning-whisper-mlx-daemon-DAG.md)）
