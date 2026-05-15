@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.9.0 - Mac 語音轉文字
+  🔨 波特槌 v1.9.1 - Mac 語音轉文字
 
   由 Gemini API 驅動的語音輸入助手
 
@@ -23,7 +23,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.9.0"
+local VERSION = "1.9.1"
 
 -- 開機自動啟動 Hammerspoon（v1.7.11）
 pcall(function() hs.autoLaunch(true) end)
@@ -1238,6 +1238,59 @@ local function autoInstallLwm(onDone)
   end)
 end
 
+-- v1.9.0: Gemma 4 audio 需要 mlx-vlm（~2GB），lazy install — 只在使用者選 gemma-* 時才裝
+local mlxVlmInstalling = false
+
+local function isMlxVlmInstalled(callback)
+  local venvPy = os.getenv("HOME") .. "/.botrun-hammer/venv/bin/python"
+  hs.task.new("/bin/bash", function(ec, _, _)
+    callback(ec == 0)
+  end, {"-c", venvPy .. " -c 'import mlx_vlm' 2>/dev/null"}):start()
+end
+
+local function autoInstallMlxVlm(onDone)
+  if mlxVlmInstalling then
+    if onDone then onDone(false) end
+    return
+  end
+  isMlxVlmInstalled(function(installed)
+    if installed then
+      if onDone then onDone(true) end
+      return
+    end
+    mlxVlmInstalling = true
+    lwmProgress:show()
+    lwmProgress:update(1, "Gemma 4 需要 mlx-vlm，下載中（約 2GB）…")
+    local venvPip = os.getenv("HOME") .. "/.botrun-hammer/venv/bin/pip"
+    local installTask
+    installTask = hs.task.new("/bin/bash",
+      function(exitCode, stdout, stderr)
+        mlxVlmInstalling = false
+        if exitCode == 0 then
+          lwmProgress:update(4, "✅ mlx-vlm 完成，準備載入 Gemma 4")
+          hs.timer.doAfter(2, function() lwmProgress:hide() end)
+          if onDone then onDone(true) end
+        else
+          local tail = (stderr or stdout or ""):sub(-150):gsub("\n", " ")
+          lwmProgress:fail("mlx-vlm 安裝失敗：" .. tail)
+          hs.timer.doAfter(8, function() lwmProgress:hide() end)
+          if onDone then onDone(false) end
+        end
+      end,
+      function(_task, stdoutChunk, stderrChunk)
+        local data = (stdoutChunk or "") .. (stderrChunk or "")
+        for line in data:gmatch("[^\r\n]+") do
+          local label = parsePipLine(line)
+          if label then lwmProgress:update(2, label) end
+        end
+        return true
+      end,
+      {"-c", venvPip .. " install --no-cache-dir mlx-vlm"}
+    )
+    installTask:start()
+  end)
+end
+
 -- v1.7.3: 升級路徑自我修復
 -- auto-update 只會拉這份 lua；daemon 腳本若缺（既有使用者升級到首次有 LWM 的版本），
 -- 從 GitHub raw 抓回來。沿用 auto-update 的 hs.http 非同步機制，不阻塞啟動。
@@ -1798,7 +1851,8 @@ local function setEngineLwm(modelKey)
   end
   if engineMenubar then engineMenubar:setTitle(currentEngineSummary()) end
   -- v1.9.0: Gemma 4 audio 有 30 秒上限，必須在 UI 警告
-  if modelKey:sub(1, 6) == "gemma-" then
+  local isGemma = modelKey:sub(1, 6) == "gemma-"
+  if isGemma then
     hs.alert.show("⚠️ Gemma 4 實驗模式：音檔需 ≤30 秒\n超過會回 422，建議只用於短句測試", 5)
   end
   -- v1.7.4: 切換到本機 = 自動補齊環境（scripts → pip → daemon），全部 UI 化
@@ -1809,13 +1863,26 @@ local function setEngineLwm(modelKey)
     end
     autoInstallLwm(function(pipOk)
       if not pipOk then return end
-      hs.alert.show("✅ 已切換到 💻 本機 " .. modelKey .. "\n背景預載 daemon + 模型...", 2)
-      -- 先 ensure daemon，再預載模型
-      hs.task.new("/bin/bash", function(ec, _, _)
-        if ec ~= 0 then return end
-        lwmPreloadModel(modelKey)
-      end, { config.lwm.ctlScript, "ensure" }):start()
-      lwmStartHealthWatchdog()
+      -- v1.9.0: Gemma 模型額外確保 mlx-vlm（lazy install）
+      local function afterEnsureDeps()
+        hs.alert.show("✅ 已切換到 💻 本機 " .. modelKey .. "\n背景預載 daemon + 模型...", 2)
+        hs.task.new("/bin/bash", function(ec, _, _)
+          if ec ~= 0 then return end
+          lwmPreloadModel(modelKey)
+        end, { config.lwm.ctlScript, "ensure" }):start()
+        lwmStartHealthWatchdog()
+      end
+      if isGemma then
+        autoInstallMlxVlm(function(vlmOk)
+          if not vlmOk then
+            hs.alert.show("⚠️ mlx-vlm 安裝失敗，無法使用 Gemma 4", 5)
+            return
+          end
+          afterEnsureDeps()
+        end)
+      else
+        afterEnsureDeps()
+      end
     end)
   end)
 end
@@ -1847,7 +1914,16 @@ function lwmPreloadModel(modelKey)
       local secs = (stdout or ""):match('"loaded_in_s":%s*([%d%.]+)') or "?"
       hs.alert.show("✅ " .. modelKey .. " 已就緒（載入 " .. secs .. "s）", 2)
     else
-      hs.alert.show("⚠️ 模型預載失敗（首次轉錄時會自動重試）\n" .. (stderr or ""):sub(1, 100), 4)
+      -- v1.9.0: daemon 錯誤訊息在 stdout 的 JSON error 欄位（curl -s 時 stderr 空）
+      local errMsg = (stdout or ""):match('"error":%s*"([^"]+)"')
+      if not errMsg or errMsg == "" then errMsg = (stderr or ""):sub(1, 200) end
+      if errMsg == "" then errMsg = "（無錯誤訊息，請看 ~/.botrun-hammer/lwm.log）" end
+      -- 特例：mlx-vlm 未裝（Gemma 路徑），引導使用者跑 pip
+      if errMsg:match("mlx%-vlm") then
+        hs.alert.show("⚠️ " .. modelKey .. " 需要 mlx-vlm，請先跑：\n~/.botrun-hammer/venv/bin/pip install mlx-vlm", 8)
+      else
+        hs.alert.show("⚠️ 模型預載失敗：" .. errMsg:sub(1, 200), 5)
+      end
     end
   end, {"-c", cmd}):start()
 end
@@ -2006,14 +2082,18 @@ ensureLwmScriptsDeployed(function(scriptsOk)
   print("[LWM-DEBUG] self-heal complete: ok=" .. tostring(scriptsOk))
   if not scriptsOk then return end
   local savedEngine = hs.settings.get("botrun.engine")
-  -- v1.7.11: 不論目前引擎，只要 LWM 已安裝就預載 daemon（開機自動啟動本機 large-v3-turbo）
-  -- 引擎=lwm 且未安裝 → 自動觸發安裝；其他情況不打擾
+  -- v1.9.0: 預設雲端 Gemini，本地模型一律 lazy（不選不裝、不選不起 daemon）
+  -- 只在 savedEngine == "lwm" 才繼續走確保流程
+  if savedEngine ~= "lwm" then
+    print("[LWM-DEBUG] engine=" .. tostring(savedEngine) .. "（非 lwm），跳過 daemon 預載")
+    return
+  end
   isLwmInstalled(function(installed)
     if installed then
-      print("[LWM-DEBUG] LWM 已安裝，開機預載 daemon（large-v3 精準模式）")
+      print("[LWM-DEBUG] engine=lwm 且 LWM 已安裝，起 daemon")
       hs.task.new("/bin/bash", nil, { config.lwm.ctlScript, "ensure" }):start()
       lwmStartHealthWatchdog()
-    elseif savedEngine == "lwm" then
+    else
       print("[LWM-DEBUG] engine=lwm 但 LWM 未安裝，啟動自動安裝（含進度條）")
       autoInstallLwm(function(ok)
         if ok then
@@ -2021,8 +2101,6 @@ ensureLwmScriptsDeployed(function(scriptsOk)
           lwmStartHealthWatchdog()
         end
       end)
-    else
-      print("[LWM-DEBUG] LWM 未安裝且引擎非 lwm，跳過預載")
     end
   end)
 end)
