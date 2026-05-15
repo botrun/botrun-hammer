@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.8.0 - Mac 語音轉文字
+  🔨 波特槌 v1.9.0 - Mac 語音轉文字
 
   由 Gemini API 驅動的語音輸入助手
 
@@ -23,7 +23,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.8.0"
+local VERSION = "1.9.0"
 
 -- 開機自動啟動 Hammerspoon（v1.7.11）
 pcall(function() hs.autoLaunch(true) end)
@@ -73,14 +73,17 @@ local config = {
     ctlScript = os.getenv("HOME") .. "/.botrun-hammer/scripts/lwm_daemon_ctl.sh",
     portFile  = os.getenv("HOME") .. "/.botrun-hammer/lwm.port",
     tokenFile = os.getenv("HOME") .. "/.botrun-hammer/lwm.token",
-    -- v1.7.9: 改用 mlx-whisper backend，預設 large-v3-turbo（多語、約 large-v3 的 8 倍速）
-    defaultModel = "large-v3-turbo",
+    -- v1.8.1: 預設改為 large-v3（精準模式，full 32 層 decoder）；turbo 列為次選
+    -- 理由：差距 ~0.2% WER 雖小，但對繁中專有名詞/口齒不清/吵雜環境，full v3 較穩
+    defaultModel = "large-v3",
     -- v1.7.6: mlx 0.31.2 的 4bit 路徑壞掉
     -- (QuantizedLinear.quantize_module 不存在)，預設 none 直到上游修復
     defaultQuant = "none",
-    -- v1.7.10: KISS — 只露 turbo 一個本機選項，避免使用者選擇焦慮
+    -- v1.9.0: 多引擎並陳：精準 / 快速 / Gemma 4 實驗
     menuModels = {
-      { key = "large-v3-turbo",  label = "💻 本機 large-v3-turbo (繁中)" },
+      { key = "large-v3",        label = "💻 本機 large-v3 (繁中・精準)" },
+      { key = "large-v3-turbo",  label = "💻 本機 large-v3-turbo (繁中・快速)" },
+      { key = "gemma-4-e4b",     label = "🧪 本機 Gemma-4-E4B (實驗・≤30s)" },
     },
     -- 健康檢查 / 自動重啟參數
     healthCheckInterval = 60,    -- 秒，每 N 秒打 /health
@@ -1794,6 +1797,10 @@ local function setEngineLwm(modelKey)
     hs.settings.set("botrun.lwm.quant", config.lwm.defaultQuant)
   end
   if engineMenubar then engineMenubar:setTitle(currentEngineSummary()) end
+  -- v1.9.0: Gemma 4 audio 有 30 秒上限，必須在 UI 警告
+  if modelKey:sub(1, 6) == "gemma-" then
+    hs.alert.show("⚠️ Gemma 4 實驗模式：音檔需 ≤30 秒\n超過會回 422，建議只用於短句測試", 5)
+  end
   -- v1.7.4: 切換到本機 = 自動補齊環境（scripts → pip → daemon），全部 UI 化
   ensureLwmScriptsDeployed(function(scriptsOk)
     if not scriptsOk then
@@ -1826,9 +1833,9 @@ function lwmPreloadModel(modelKey)
   local i = 1
   local spinner = hs.timer.doEvery(1, function()
     i = (i % #emojis) + 1
-    hs.alert.show(emojis[i] .. " 載入 " .. modelKey .. " 中...\n首次下載約 1.5GB", 1.2)
+    hs.alert.show(emojis[i] .. " 載入 " .. modelKey .. " 中...\n首次下載約 1.5–3GB", 1.2)
   end)
-  hs.alert.show(emojis[1] .. " 載入 " .. modelKey .. " 中...\n首次下載約 1.5GB", 1.2)
+  hs.alert.show(emojis[1] .. " 載入 " .. modelKey .. " 中...\n首次下載約 1.5–3GB", 1.2)
 
   local cmd = string.format(
     "curl -s -m 600 -X POST -H 'Authorization: Bearer %s' 'http://127.0.0.1:%s/switch_model?model=%s'",
@@ -2003,7 +2010,7 @@ ensureLwmScriptsDeployed(function(scriptsOk)
   -- 引擎=lwm 且未安裝 → 自動觸發安裝；其他情況不打擾
   isLwmInstalled(function(installed)
     if installed then
-      print("[LWM-DEBUG] LWM 已安裝，開機預載 daemon（large-v3-turbo）")
+      print("[LWM-DEBUG] LWM 已安裝，開機預載 daemon（large-v3 精準模式）")
       hs.task.new("/bin/bash", nil, { config.lwm.ctlScript, "ensure" }):start()
       lwmStartHealthWatchdog()
     elseif savedEngine == "lwm" then

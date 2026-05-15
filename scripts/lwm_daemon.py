@@ -30,9 +30,17 @@ import sys
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
+
+# v1.9.0 地雷：MLX 的 default stream 是 thread-local。
+# ThreadingHTTPServer 每個 request 起新 thread，會出現
+# "There is no Stream(gpu, N) in current thread." 因為模型權重 allocated 在
+# load thread 的 stream，但 generate 跑在不同 thread。
+# 修法：把所有 MLX 操作（load/transcribe）丟進固定單一 worker thread 執行。
+MLX_WORKER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mlx")
 
 CONFIG_DIR = Path(os.environ.get("BOTRUN_HAMMER_HOME", str(Path.home() / ".botrun-hammer")))
 TOKEN_FILE = CONFIG_DIR / "lwm.token"
@@ -41,9 +49,9 @@ PID_FILE = CONFIG_DIR / "lwm.pid"
 LOG_FILE = CONFIG_DIR / "lwm.log"
 
 DEFAULT_PORT_RANGE = range(18120, 18131)
+DAEMON_VERSION = "1.9.0"  # v1.9.0: 多 backend（whisper + gemma-4 audio）
 
 # v1.7.9: 改用 Apple 官方 mlx-whisper（支援 large-v3-turbo，多語）
-# 模型名稱 → HuggingFace MLX repo 映射
 HF_REPO_MAP = {
     "tiny":            "mlx-community/whisper-tiny-mlx",
     "small":           "mlx-community/whisper-small-mlx",
@@ -52,15 +60,44 @@ HF_REPO_MAP = {
     "large-v2":        "mlx-community/whisper-large-v2-mlx",
     "large-v3":        "mlx-community/whisper-large-v3-mlx",
     "large-v3-turbo":  "mlx-community/whisper-large-v3-turbo",
-    # 英文專用（保留可用但不推薦繁中）
     "distil-medium.en":  "mlx-community/distil-whisper-medium.en",
     "distil-large-v3":   "mlx-community/distil-whisper-large-v3",
 }
-SUPPORTED_MODELS = list(HF_REPO_MAP.keys())
-SUPPORTED_QUANTS = [None, "4bit", "8bit"]  # 保留參數但目前 mlx-whisper 走 repo 內建量化
-DEFAULT_MODEL = os.environ.get("LWM_DEFAULT_MODEL", "large-v3-turbo")
+
+# v1.9.0: Gemma 4 audio backend (via mlx-vlm)
+# 注意：Gemma 4 audio 硬限 30 秒（25 tokens/sec * 30s = 750 audio tokens）
+GEMMA_REPO_MAP = {
+    "gemma-4-e2b":  "google/gemma-4-e2b-it",
+    "gemma-4-e4b":  "google/gemma-4-e4b-it",
+}
+GEMMA_MAX_AUDIO_SEC = 30.0
+
+SUPPORTED_MODELS = list(HF_REPO_MAP.keys()) + list(GEMMA_REPO_MAP.keys())
+SUPPORTED_QUANTS = [None, "4bit", "8bit"]
+DEFAULT_MODEL = os.environ.get("LWM_DEFAULT_MODEL", "large-v3")
 DEFAULT_QUANT = os.environ.get("LWM_DEFAULT_QUANT") or None
 MAX_AUDIO_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB hard cap
+
+
+def is_gemma_model(name: str) -> bool:
+    """Dispatcher key — KISS: 前綴判別即可，新引擎加 elseif 一行."""
+    return name.startswith("gemma-") or name in GEMMA_REPO_MAP
+
+
+def probe_audio_duration(path: str) -> float | None:
+    """用 ffprobe 拿音檔長度（秒）。失敗回 None（不阻擋轉錄）。"""
+    import subprocess
+    for ffp in ("/opt/homebrew/bin/ffprobe", "/usr/local/bin/ffprobe", "ffprobe"):
+        try:
+            out = subprocess.check_output(
+                [ffp, "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", path],
+                stderr=subprocess.DEVNULL, timeout=10,
+            )
+            return float(out.decode().strip())
+        except (FileNotFoundError, subprocess.SubprocessError, ValueError):
+            continue
+    return None
 
 
 def log(msg: str) -> None:
@@ -73,48 +110,195 @@ def log(msg: str) -> None:
         pass
 
 
-class ModelCache:
-    """v1.7.9: 改用 mlx-whisper，預載 model object 避免每次 transcribe 重 mmap。"""
+class TranscribeError(Exception):
+    """Domain error — 由 backend 拋出，dispatcher 對映 HTTP status."""
+    def __init__(self, status: int, msg: str):
+        super().__init__(msg)
+        self.status = status
+        self.msg = msg
+
+
+class Backend:
+    """DDD: 「給音檔出文字」的領域介面。子類各自決定怎麼載模型、怎麼 transcribe."""
+    name: str = "base"
+
+    def load(self, model_name: str) -> str:  # returns repo path used
+        raise NotImplementedError
+
+    def transcribe(self, audio_path: str, model_name: str, lang: str | None) -> str:
+        raise NotImplementedError
+
+
+class WhisperBackend(Backend):
+    """v1.7.9 既有 mlx-whisper 路徑."""
+    name = "whisper"
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
         self._model = None
         self._key: str | None = None
-        self._loaded_at: float | None = None
 
     def _resolve_repo(self, model_name: str) -> str:
-        # 直接吃 hf repo 字串（含 / 視為 repo path）
         if "/" in model_name:
             return model_name
         if model_name not in HF_REPO_MAP:
-            raise ValueError(f"unsupported model: {model_name} (not in HF_REPO_MAP)")
+            raise TranscribeError(400, f"unsupported whisper model: {model_name}")
         return HF_REPO_MAP[model_name]
 
-    def get_repo(self, model_name: str) -> str:
+    def load(self, model_name: str) -> str:
         repo = self._resolve_repo(model_name)
+        if self._key != model_name or self._model is None:
+            from mlx_whisper.load_models import load_model
+            log(f"[whisper] load {model_name} -> {repo}")
+            self._model = None
+            t0 = time.time()
+            self._model = load_model(repo)
+            log(f"[whisper] loaded in {time.time() - t0:.2f}s")
+            self._key = model_name
+        return repo
+
+    def transcribe(self, audio_path: str, model_name: str, lang: str | None) -> str:
+        repo = self.load(model_name)
+        import mlx_whisper
+        kwargs = {"path_or_hf_repo": repo}
+        if lang:
+            kwargs["language"] = lang
+        result = mlx_whisper.transcribe(audio_path, **kwargs)
+        return (result.get("text") if isinstance(result, dict) else str(result)) or ""
+
+
+class GemmaAudioBackend(Backend):
+    """v1.9.0: Gemma 4 audio (mlx-vlm). 硬限 30s.
+
+    懶載入策略：第一次用到才 import mlx_vlm（避免雲端使用者吃 ~2GB 依賴）。
+    """
+    name = "gemma-audio"
+
+    def __init__(self) -> None:
+        self._model = None
+        self._processor = None
+        self._key: str | None = None
+
+    def _resolve_repo(self, model_name: str) -> str:
+        if "/" in model_name:
+            return model_name
+        if model_name not in GEMMA_REPO_MAP:
+            raise TranscribeError(400, f"unsupported gemma model: {model_name}")
+        return GEMMA_REPO_MAP[model_name]
+
+    def load(self, model_name: str) -> str:
+        repo = self._resolve_repo(model_name)
+        if self._key != model_name or self._model is None:
+            try:
+                from mlx_vlm import load as vlm_load
+            except ImportError as exc:
+                raise TranscribeError(
+                    501,
+                    f"mlx-vlm 未安裝。請跑：pip install mlx-vlm torchvision  詳：{exc}",
+                )
+            log(f"[gemma-audio] load {model_name} -> {repo}")
+            self._model = None
+            self._processor = None
+            t0 = time.time()
+            self._model, self._processor = vlm_load(repo)
+            log(f"[gemma-audio] loaded in {time.time() - t0:.2f}s")
+            self._key = model_name
+        return repo
+
+    def transcribe(self, audio_path: str, model_name: str, lang: str | None) -> str:
+        # 30s 上限檢查
+        duration = probe_audio_duration(audio_path)
+        if duration is not None and duration > GEMMA_MAX_AUDIO_SEC:
+            raise TranscribeError(
+                422,
+                f"Gemma 4 audio max {GEMMA_MAX_AUDIO_SEC}s, got {duration:.1f}s. "
+                f"請改用 whisper 模型（large-v3 或 large-v3-turbo）做長音轉錄。",
+            )
+        self.load(model_name)
+        from mlx_vlm import generate as vlm_generate
+        from mlx_vlm.prompt_utils import apply_chat_template
+
+        # 中文 prompt 引導，避免 echo prompt
+        lang_hint = "繁體中文" if (lang or "").startswith("zh") else (lang or "the same language as the audio")
+        instruction = f"請逐字轉錄這段音訊，使用{lang_hint}輸出。只輸出轉錄文字，不要任何前後說明。"
+        prompt = apply_chat_template(
+            self._processor, self._model.config, instruction, num_audios=1,
+        )
+        result = vlm_generate(
+            model=self._model, processor=self._processor, prompt=prompt,
+            audio=[audio_path], max_tokens=500,
+            temperature=0.0,  # 轉錄任務 deterministic
+        )
+        # mlx-vlm v0.1+ 回 GenerationResult dataclass 或 str
+        text = getattr(result, "text", None) or str(result)
+        # strip prompt echo / 角色標記
+        for prefix in ("model\n", "assistant\n", "Transcription:", "轉錄："):
+            if text.startswith(prefix):
+                text = text[len(prefix):]
+        return text.strip()
+
+
+class BackendCache:
+    """v1.9.0: 依 model name 路由 backend；同時只保留一個 backend 載入的權重."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._whisper = WhisperBackend()
+        self._gemma = GemmaAudioBackend()
+        self._current: Backend | None = None
+        self._current_model: str | None = None
+        self._loaded_at: float | None = None
+
+    def _pick(self, model_name: str) -> Backend:
+        return self._gemma if is_gemma_model(model_name) else self._whisper
+
+    def _load_impl(self, model_name: str) -> str:
+        backend = self._pick(model_name)
+        if self._current is not None and self._current is not backend:
+            log(f"backend switch: {self._current.name} -> {backend.name}; free other")
+            if self._current is self._whisper:
+                self._whisper = WhisperBackend()
+            else:
+                self._gemma = GemmaAudioBackend()
+            backend = self._pick(model_name)
+        repo = backend.load(model_name)
+        self._current = backend
+        self._current_model = model_name
+        self._loaded_at = time.time()
+        return repo
+
+    def load(self, model_name: str) -> str:
+        # 路由到 MLX worker thread（避免 stream-thread mismatch）
         with self._lock:
-            if self._key != model_name or self._model is None:
-                from mlx_whisper.load_models import load_model
-                log(f"model load: {model_name} -> {repo}")
-                self._model = None  # 釋放舊
-                t0 = time.time()
-                self._model = load_model(repo)
-                self._loaded_at = time.time()
-                self._key = model_name
-                log(f"model loaded in {self._loaded_at - t0:.2f}s")
-            return repo
+            return MLX_WORKER.submit(self._load_impl, model_name).result()
+
+    def _transcribe_impl(self, audio_path: str, model_name: str, lang: str | None) -> str:
+        backend = self._pick(model_name)
+        if self._current is not backend or self._current_model != model_name:
+            self._load_impl(model_name)
+            backend = self._pick(model_name)
+        return backend.transcribe(audio_path, model_name, lang)
+
+    def transcribe(self, audio_path: str, model_name: str, lang: str | None) -> str:
+        with self._lock:
+            return MLX_WORKER.submit(self._transcribe_impl, audio_path, model_name, lang).result()
 
     def info(self) -> dict:
         with self._lock:
-            if self._key is None:
+            if self._current_model is None:
                 return {"model_loaded": False, "model_name": None, "quant": None}
+            backend = self._pick(self._current_model)
             return {
                 "model_loaded": True,
-                "model_name": self._key,
+                "model_name": self._current_model,
+                "backend": backend.name,
                 "quant": None,
                 "loaded_at": self._loaded_at,
-                "repo": self._resolve_repo(self._key),
+                "repo": backend._resolve_repo(self._current_model),
             }
+
+
+# 向後相容別名：原 ModelCache 名稱沿用，避免外部腳本破壞
+ModelCache = BackendCache
 
 
 class AuthError(Exception):
@@ -181,7 +365,7 @@ def make_handler(token: str, cache: ModelCache, started_at: float):
             route = self._route()
             if route == "/health":
                 info = cache.info()
-                info.update({"ok": True, "uptime_s": time.time() - started_at, "version": "1.7.0"})
+                info.update({"ok": True, "uptime_s": time.time() - started_at, "version": DAEMON_VERSION})
                 return self._json(200, info)
             if route == "/models":
                 return self._json(200, {"models": SUPPORTED_MODELS, "quants": SUPPORTED_QUANTS})
@@ -204,7 +388,9 @@ def make_handler(token: str, cache: ModelCache, started_at: float):
             if route == "/switch_model":
                 t0 = time.time()
                 try:
-                    cache.get_repo(model)
+                    cache.load(model)
+                except TranscribeError as exc:
+                    return self._json(exc.status, {"error": exc.msg})
                 except Exception as exc:
                     return self._json(500, {"error": str(exc)})
                 return self._json(200, {"ok": True, "loaded_in_s": time.time() - t0, "model": model})
@@ -231,17 +417,11 @@ def make_handler(token: str, cache: ModelCache, started_at: float):
                     tmp_path = tmp.name
                 log(f"transcribe: body received in {time.time() - read_t0:.2f}s, tmp={tmp_path}")
                 try:
-                    repo = cache.get_repo(model)
-                    import mlx_whisper
                     t0 = time.time()
                     lang = qs.get("lang") or None
-                    kwargs = {"path_or_hf_repo": repo}
-                    if lang:
-                        kwargs["language"] = lang
-                    result = mlx_whisper.transcribe(tmp_path, **kwargs)
-                    text = (result.get("text") if isinstance(result, dict) else str(result)) or ""
+                    text = cache.transcribe(tmp_path, model, lang)
                     latency = time.time() - t0
-                    log(f"transcribe ok bytes={length} model={model} quant={quant} latency={latency:.2f}s text_len={len(text)}")
+                    log(f"transcribe ok bytes={length} model={model} latency={latency:.2f}s text_len={len(text)}")
                     return self._json(200, {
                         "text": text.strip(),
                         "latency_ms": int(latency * 1000),
@@ -249,6 +429,9 @@ def make_handler(token: str, cache: ModelCache, started_at: float):
                         "quant": quant,
                         "audio_bytes": length,
                     })
+                except TranscribeError as exc:
+                    log(f"transcribe domain error [{exc.status}]: {exc.msg}")
+                    return self._json(exc.status, {"error": exc.msg, "model": model})
                 except Exception as exc:
                     log(f"transcribe error: {exc!r}")
                     return self._json(500, {"error": repr(exc)})
@@ -282,7 +465,7 @@ def main() -> int:
 
     if args.preload:
         try:
-            cache.get_repo(DEFAULT_MODEL)
+            cache.load(DEFAULT_MODEL)
         except Exception as exc:
             log(f"preload failed: {exc!r}")
 

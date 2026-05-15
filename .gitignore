@@ -38,6 +38,11 @@ scripts/*
 !scripts/lwm_daemon_ctl.sh
 !scripts/test_lwm_daemon.sh
 !scripts/test_uv_install.sh
+# v1.9.0: ASR benchmark — 可重現腳本 + ground truth（wav 由 generate_reference.sh 重產，不入版控）
+!scripts/asr_benchmark/
+!scripts/asr_benchmark/*.py
+!scripts/asr_benchmark/*.sh
+!scripts/asr_benchmark/*.txt
 
 # 日誌
 *.log

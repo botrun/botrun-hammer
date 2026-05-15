@@ -1,0 +1,1 @@
+大家好，這是波特槌語音轉文字的精準度測試。今天日期是二零二六年五月十五日，我們要驗證三個引擎的中文轉錄能力。第一個是 Whisper large v3，第二個是 large v3 turbo，第三個是 Google Gemma 4 E4B。請特別注意專有名詞，例如：台北一零一、行政院、財團法人國家實驗研究院、以及 MLX Apple Silicon 加速框架。混合英文像是 GitHub、 OpenAI、 token、 transcribe 也要正確。

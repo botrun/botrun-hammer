@@ -1,6 +1,6 @@
 ## 波特槌版本規則
 
-**當前版本: 1.8.0**
+**當前版本: 1.9.0**
 
 ### 永久規則
 每次修改 `hammerspoon/botrun-hammer.lua` 時，必須遞增版本號碼：
@@ -18,6 +18,7 @@
 - 主版本 (major)：重大變更、不相容
 
 ### 地雷經驗文件索引
+- [⭐⭐⭐ v1.9.0 多 ASR backend（Whisper + Gemma 4 audio）](docs/2026-05-15_120028_multi-asr-backend-lessons.md) — 繁中 19.93s 基準音實測：whisper large-v3 CER 12.98%（最準）/ turbo 13.46%（快 3× 只差 0.48pp）/ gemma-4-e4b 15.87%；8 條跨專案教訓含 L3 **MLX default stream 是 thread-local（嚴重坑）** 修法 = `ThreadPoolExecutor(max_workers=1)` 序列化所有 MLX call、L2 **Whisper 對 lang=zh 仍回簡中**（CER 30→13% 落差）、L5 LLM-ASR 錯誤分布跟 CTC-ASR 不同、L7 BDD Gherkin 寫進 DAG 當 SOP；配套 `scripts/asr_benchmark/` 可重現（`generate_reference.sh` macOS say + `run_wer_compare.py` normalized CER）；對應 GitHub [#3](https://github.com/botrun/botrun-hammer/issues/3) [#4](https://github.com/botrun/botrun-hammer/issues/4) [#5](https://github.com/botrun/botrun-hammer/issues/5)（[DAG](docs/2026-05-15_114803_large-v3-and-gemma4-e2e-DAG.md)）（[Report](docs/2026-05-15_120008_asr-accuracy-report.md)）
 - [離線優先錄音架構](docs/2026-03-22_offline-first-recording.md) — 錄音必須先存檔再轉錄，歷史紀錄寫入時機與非同步順序風險
 - [curl|bash 安裝腳本地雷](docs/2026-04-01_curl-bash-stdin-pitfall.md) — brew install 吃掉 stdin 導致腳本截斷 + Accessibility 權限引導
 - [5 小時長錄音穩定性架構](docs/2026-04-10_long-recording-5hr-stability.md) — hs.task pipe buffer 塞爆 + MP4 moov atom + iCloud Documents + fragmented MP4 + 錯誤可視化
