@@ -51,3 +51,4 @@ scripts/*
 mlx_models/
 *.mlx
 *.safetensors
+docs/test-logs/
