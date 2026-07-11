@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.9.3 - Mac 語音轉文字
+  🔨 波特槌 v1.9.4 - Mac 語音轉文字
 
   由 Gemini API 驅動的語音輸入助手
 
@@ -23,7 +23,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.9.3"
+local VERSION = "1.9.4"
 
 -- 開機自動啟動 Hammerspoon（v1.7.11）
 pcall(function() hs.autoLaunch(true) end)
@@ -41,7 +41,7 @@ local config = {
 
   -- Gemini API
   geminiApiUrl = "https://generativelanguage.googleapis.com/v1beta",
-  geminiModel = "gemini-3-flash-preview",
+  geminiModel = "gemini-3.5-flash",
   geminiUploadUrl = "https://generativelanguage.googleapis.com/upload/v1beta/files",
 
   -- 錄音設定
