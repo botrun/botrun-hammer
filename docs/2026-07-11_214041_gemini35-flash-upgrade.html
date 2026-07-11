@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>波特槌 v1.9.4 — 雲端模型升級 gemini-3.5-flash 傳承</title>
+<style>
+  :root { --ok:#4a7c59; --bad:#b23b3b; --ink:#2b2b2b; --muted:#6b6b6b; --bg:#f6f5f2; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,"Noto Sans TC","PingFang TC",sans-serif; background:var(--bg); color:var(--ink); margin:0; padding:24px; font-size:15px; line-height:1.75; }
+  main { max-width:860px; margin:0 auto; }
+  h1 { font-size:26px; } h2 { font-size:20px; margin-top:40px; border-left:5px solid var(--ok); padding-left:10px; }
+  h3 { font-size:16px; }
+  .svgcard { background:#fff; border-radius:14px; box-shadow:0 2px 10px rgba(0,0,0,.08); padding:16px; margin:20px 0 4px; }
+  figure { margin:24px 0; }
+  figcaption { font-size:13px; color:var(--muted); margin-top:6px; text-align:center; }
+  .quote { font-size:13px; color:var(--muted); background:#eef2ee; border-left:3px solid var(--ok); padding:6px 10px; border-radius:6px; margin-top:8px; }
+  .prompt { background:#fff; border:1px solid #ddd; border-radius:10px; padding:10px 14px; margin:10px 0; }
+  .prompt b { color:var(--ok); }
+  code, pre { font-family:ui-monospace,Menlo,monospace; font-size:13px; }
+  pre { background:#1f2430; color:#e8e8e8; padding:14px; border-radius:10px; overflow-x:auto; }
+  .plain { color:var(--muted); }
+  table { border-collapse:collapse; width:100%; font-size:14px; }
+  td,th { border:1px solid #ddd; padding:6px 10px; text-align:left; }
+  svg text { font-family:-apple-system,"Noto Sans TC",sans-serif; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>🔨 波特槌 v1.9.4 — 雲端模型升級 gemini-3.5-flash 傳承</h1>
+<p class="plain">2026-07-11｜repo：botrun-hammer｜tag：v1.9.4｜核心教訓：<b>「上網查證後發現不用改」也是有價值的工程產出</b>——查證讓兩處程式碼免於瞎改。</p>
+
+<h2>📜 人類原始 prompt 全文（逐字）</h2>
+<div class="prompt"><b>001</b>｜請問你預設的模型雲端的是設定哪些</div>
+<div class="prompt"><b>002</b>｜上網查最新 gemini 3.5 flash 模型，然後請你更新gemini-3-flash-preview, 改用最新的 gemini 3.5 flash model id, bump , restart</div>
+<div class="prompt"><b>003</b>｜部署</div>
+<div class="prompt"><b>004</b>｜上網查 thinking 設定為 0 或者最小</div>
+<div class="prompt"><b>005</b>｜要用正確的設定參數方式</div>
+<div class="prompt"><b>006</b>｜for model , 上傳檔案如何上傳也上網查清楚, 更新</div>
+<div class="prompt"><b>007</b>｜一樣的話就不用改</div>
+<div class="prompt"><b>008</b>｜（上傳檔案）</div>
+<div class="prompt"><b>009</b>｜commit push release publish</div>
+<div class="prompt"><b>010</b>｜/html-svg</div>
+
+<h2>🕐 每輪演進：做法 → 結果 → 為什麼這樣走</h2>
+
+<h3>v1（001）盤點現況</h3>
+<p>白話比喻：先打開冰箱看有什麼，再決定買菜。（真操作：<code>grep -n "geminiModel" hammerspoon/botrun-hammer.lua</code> → 發現雲端只有一個模型 <code>gemini-3-flash-preview</code>，其餘三個都是本機引擎。）</p>
+
+<h3>v2（002）查官方 → 換模型 → bump → 重啟</h3>
+<p>白話比喻：換引擎前先查原廠型錄確認新引擎編號，不憑印象。（真操作：WebSearch + 官方 ai.google.dev 確認 stable id 是 <code>gemini-3.5-flash</code>、GA、支援音訊輸入 → 改 lua 第 44 行 → VERSION 1.9.3→1.9.4 → <code>hs -c "hs.reload()"</code>。）</p>
+
+<figure>
+<div class="svgcard">
+<svg viewBox="0 0 780 170" role="img" aria-label="模型升級前後對比">
+  <rect x="10" y="20" width="370" height="130" rx="12" fill="#fdf0f0" stroke="#b23b3b"/>
+  <text x="30" y="50" font-size="16" fill="#b23b3b">❌ 升級前</text>
+  <text x="30" y="80" font-size="14">gemini-3-flash-preview</text>
+  <text x="30" y="105" font-size="13" fill="#8a5a5a">preview 版：隨時可能被下架</text>
+  <text x="30" y="130" font-size="13" fill="#8a5a5a">非最新一代，繁中聽打非最佳</text>
+  <rect x="400" y="20" width="370" height="130" rx="12" fill="#eef6f0" stroke="#4a7c59"/>
+  <text x="420" y="50" font-size="16" fill="#4a7c59">✅ 升級後（v1.9.4）</text>
+  <text x="420" y="80" font-size="14">gemini-3.5-flash</text>
+  <text x="420" y="105" font-size="13" fill="#4a7c59">GA stable（I/O 2026 發布）</text>
+  <text x="420" y="130" font-size="13" fill="#4a7c59">支援音訊輸入，thinking 可調 MINIMAL</text>
+  <text x="385" y="90" font-size="20">➜</text>
+</svg>
+</div>
+<figcaption>一行設定換一代模型：<code>config.geminiModel</code> 是 SSOT，全程式只改這一處。</figcaption>
+<div class="quote">來源：Google AI for Developers「Gemini 3.5 Flash」模型頁——Stable: gemini-3.5-flash；Inputs 含 Audio。</div>
+</figure>
+
+<h3>v3（004+005）查 thinking 最小化的「正確參數」</h3>
+<p>白話比喻：想叫廚師別想太多、快點上菜——但得用菜單上真的存在的暗號。（真操作：查官方 thinking 文件——Gemini 3.x 用 <code>thinkingLevel</code>，合法值 <code>MINIMAL/LOW/MEDIUM/HIGH</code>，預設 medium、<b>無法完全關閉</b>；舊的 <code>thinkingBudget: 0</code> 是 2.5 世代語法，3.x 兩者同給會直接 400。）</p>
+
+<h3>v4（006+007+008）查上傳流程 →「一樣就不用改」</h3>
+<p>白話比喻：搬新家前先確認舊鑰匙能不能開新門——能開就別換鎖。（真操作：查證 Files API resumable 兩段式上傳（init 拿 upload_url → 上傳拿 file_uri → 帶進 generateContent）對 3.5 Flash 完全沒變；且程式碼裡 <b>本來就寫好</b> <code>thinkingConfig.thinkingLevel: "MINIMAL"</code>，語法正確。結論：thinking 與上傳兩處都零修改。）</p>
+
+<figure>
+<div class="svgcard">
+<svg viewBox="0 0 780 210" role="img" aria-label="查證後三件事只需改一件">
+  <text x="20" y="30" font-size="15" font-weight="bold">🔍 上網查證 3 件事 → 只有 1 件需要動手</text>
+  <rect x="20" y="50" width="230" height="140" rx="12" fill="#eef6f0" stroke="#4a7c59"/>
+  <text x="40" y="80" font-size="14" fill="#4a7c59">✅ 需要改</text>
+  <text x="40" y="108" font-size="13">model id 換</text>
+  <text x="40" y="130" font-size="13">gemini-3.5-flash</text>
+  <text x="40" y="165" font-size="12" fill="#6b6b6b">lua:44 一行</text>
+  <rect x="275" y="50" width="230" height="140" rx="12" fill="#f4f4f4" stroke="#999"/>
+  <text x="295" y="80" font-size="14" fill="#555">🟰 查了不用改</text>
+  <text x="295" y="108" font-size="13">thinkingLevel: MINIMAL</text>
+  <text x="295" y="130" font-size="12" fill="#6b6b6b">原碼已是 3.x 正確語法</text>
+  <text x="295" y="165" font-size="12" fill="#6b6b6b">3.x 禁與 thinkingBudget 並用</text>
+  <rect x="530" y="50" width="230" height="140" rx="12" fill="#f4f4f4" stroke="#999"/>
+  <text x="550" y="80" font-size="14" fill="#555">🟰 查了不用改</text>
+  <text x="550" y="108" font-size="13">Files API 上傳流程</text>
+  <text x="550" y="130" font-size="12" fill="#6b6b6b">resumable 兩段式沒變</text>
+  <text x="550" y="165" font-size="12" fill="#6b6b6b">file_uri 用法相同</text>
+</svg>
+</div>
+<figcaption>「一樣的話就不用改」（prompt 007）＝查證的價值不在改碼量，在<b>確定不用改的信心</b>。</figcaption>
+<div class="quote">來源：ai.google.dev thinking 文件與 whats-new-gemini-3.5——thinking_level 與 thinking_budget 同請求回 400。</div>
+</figure>
+
+<h3>v5（003+009）部署 → commit → push → tag → GitHub Release</h3>
+<p>白話比喻：菜煮好不只端上自家桌，還要送到每位訂戶家門口。（真操作：<code>git fetch origin main</code> 先拉最新 → commit 2f8eebc push main → 順手把殘留的 <code>docs/test-logs/</code> 加進 .gitignore（commit 衛生鐵律）→ <code>git tag v1.9.4</code> → <code>gh release create v1.9.4</code>。同事端靠每 4 小時自動更新從 GitHub raw 收到。）</p>
+
+<figure>
+<div class="svgcard">
+<svg viewBox="0 0 780 120" role="img" aria-label="交付流程時間軸">
+  <line x1="30" y1="60" x2="750" y2="60" stroke="#4a7c59" stroke-width="3"/>
+  <g font-size="12" text-anchor="middle">
+    <circle cx="80" cy="60" r="8" fill="#4a7c59"/><text x="80" y="35">🔍 查官方</text><text x="80" y="95">model id</text>
+    <circle cx="215" cy="60" r="8" fill="#4a7c59"/><text x="215" y="35">✏️ 改一行</text><text x="215" y="95">+bump 1.9.4</text>
+    <circle cx="350" cy="60" r="8" fill="#4a7c59"/><text x="350" y="35">🔄 hs.reload</text><text x="350" y="95">symlink 即生效</text>
+    <circle cx="485" cy="60" r="8" fill="#4a7c59"/><text x="485" y="35">⬆️ push main</text><text x="485" y="95">fetch 先行</text>
+    <circle cx="620" cy="60" r="8" fill="#4a7c59"/><text x="620" y="35">🏷️ tag+Release</text><text x="620" y="95">v1.9.4</text>
+    <circle cx="730" cy="60" r="8" fill="#4a7c59"/><text x="730" y="35">📡 自動更新</text><text x="730" y="95">同事 4hr 內收到</text>
+  </g>
+</svg>
+</div>
+<figcaption>從查證到全員收到升級，全程約 10 分鐘；靠 symlink（本機即時）＋ GitHub raw 自動更新（遠端推送）雙軌。</figcaption>
+</figure>
+
+<h2>🎁 成果四件套</h2>
+
+<h3>① 最終 How-to（下次換雲端模型 SOP）</h3>
+<ol>
+<li>WebSearch 官方 <code>ai.google.dev</code> 確認 stable model id（不憑印象、不用部落格轉述當唯一來源）。</li>
+<li>只改 <code>hammerspoon/botrun-hammer.lua</code> 的 <code>config.geminiModel</code>（SSOT 一處）。</li>
+<li>順帶查證：thinking 參數語法世代是否變了？上傳流程是否變了？<b>一樣就不改</b>。</li>
+<li>bump VERSION（第 2 行註解＋第 26 行常數）→ <code>hs -c "hs.reload()"</code> → 按 F5 實測一次錄音。</li>
+<li><code>git fetch</code> → commit → push main → tag → <code>gh release create</code>。</li>
+</ol>
+
+<h3>② 最終程式碼（本次 diff 核心）</h3>
+<pre>- geminiModel = "gemini-3-flash-preview",
++ geminiModel = "gemini-3.5-flash",
+- local VERSION = "1.9.3"
++ local VERSION = "1.9.4"</pre>
+
+<h3>③ 最終 prompt（generateContent 請求體，維持不變）</h3>
+<pre>{
+  "contents": [{ "parts": [
+    {"text": "請將這段音訊轉錄成繁體中文文字，只輸出轉錄的文字內容，不要加任何說明"},
+    {"file_data": {"mime_type": "audio/mp4", "file_uri": "&lt;Files API 回傳的 file_uri&gt;"}}
+  ]}],
+  "generationConfig": {
+    "maxOutputTokens": 65536,
+    "thinkingConfig": { "thinkingLevel": "MINIMAL" }
+  }
+}</pre>
+
+<h3>④ 最終資料樣態示範與解說</h3>
+<table>
+<tr><th>階段</th><th>資料樣態（去識別示範）</th><th>解說</th></tr>
+<tr><td>上傳 init 回應 header</td><td><code>x-goog-upload-url: https://…/upload/v1beta/files?upload_id=…</code></td><td>resumable 第一段只拿續傳網址，不傳音檔</td></tr>
+<tr><td>上傳完成回應</td><td><code>{"file": {"uri": "https://generativelanguage.googleapis.com/v1beta/files/xxxx"}}</code></td><td>jq 取 <code>.file.uri</code> 帶進第三步</td></tr>
+<tr><td>轉錄回應</td><td><code>{"candidates":[{"content":{"parts":[{"text":"（純繁中逐字稿）"}]}}]}</code></td><td>只取第一個 part 的 text 貼到游標處</td></tr>
+</table>
+
+<h2>💡 為什麼最後突破（關鍵變因）</h2>
+<p>本次沒有「卡關」，關鍵變因是<b>把查證當成第一級任務</b>：使用者連下三道「上網查清楚再動」的指令（002/004/006），結果三項查證中兩項證明「原碼已正確、免改」。若憑記憶改，最可能的錯是把 2.5 世代的 <code>thinkingBudget: 0</code> 塞進 3.x 請求——官方明載會直接 400，等於升級當下把整條轉錄鏈打斷。<b>先前版本不是卡關而是風險潛伏</b>：preview model id 隨時可能被 Google 下架，趁 GA 出現即刻切換是零成本保險。</p>
+
+<h2>⚠️ 地雷清單</h2>
+<ul>
+<li><b>Gemini 3.x 禁止 <code>thinkingLevel</code> 與 <code>thinkingBudget</code> 並用</b>：同請求給兩個直接 400。3.x 一律用 <code>thinkingLevel</code>（MINIMAL/LOW/MEDIUM/HIGH），且無法完全關閉 thinking，MINIMAL 就是地板。</li>
+<li><b>Gemini 3.x 官方建議移除 <code>temperature/top_p/top_k</code></b>：舊參數別再帶。</li>
+<li><b>preview model id 是定時炸彈</b>：GA 版一出就該切，release note 標明來源文件連結方便日後稽核。</li>
+<li><b>hs.reload 時 CLI 回「message port was invalidated」是正常現象</b>：reload 本來就會斷 IPC，不是失敗；隔 3 秒再打 <code>hs -c</code> 驗證即可。</li>
+<li><b>~/.hammerspoon/botrun-hammer.lua 是 symlink 指向 repo</b>：改 repo 檔案＋reload 即生效，不需 install.sh；但同事端要靠 push main 才收得到。</li>
+</ul>
+
+<h2>Sources</h2>
+<ul>
+<li><a href="https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash">Gemini 3.5 Flash 模型頁（stable id、Audio 輸入）</a></li>
+<li><a href="https://ai.google.dev/gemini-api/docs/whats-new-gemini-3.5">What's new in Gemini 3.5（thinkingLevel 預設 medium、移除 temperature 建議）</a></li>
+<li><a href="https://ai.google.dev/gemini-api/docs/generate-content/whats-new-gemini-3.5">generateContent 版 What's new（thinkingConfig.thinkingLevel REST 語法）</a></li>
+<li><a href="https://ai.google.dev/gemini-api/docs/thinking">Gemini thinking 文件（3.x 與 2.5 參數世代差異）</a></li>
+</ul>
+
+</main>
+</body>
+</html>
