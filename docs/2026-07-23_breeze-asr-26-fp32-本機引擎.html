@@ -1,0 +1,243 @@
+<meta charset="utf-8">
+<title>波特槌加入 Breeze-ASR-26 全精度（fp32）本機引擎 — 傳承</title>
+<style>
+  :root{ --ink:#2b2b2b; --sub:#6b6b6b; --line:#e3e0da; --bg:#faf9f6;
+         --red:#b23b3b; --redbg:#f7ecec; --green:#4a7c59; --greenbg:#eaf1ec; --blue:#3b6ea5; }
+  *{ box-sizing:border-box }
+  body{ margin:0; background:var(--bg); color:var(--ink);
+        font-family:-apple-system,"PingFang TC","Noto Sans TC",Helvetica,sans-serif;
+        line-height:1.75; font-size:16px; -webkit-font-smoothing:antialiased }
+  .wrap{ max-width:860px; margin:0 auto; padding:44px 22px 90px }
+  header h1{ font-size:27px; line-height:1.35; margin:0 0 10px }
+  header .meta{ color:var(--sub); font-size:14px; margin-bottom:6px }
+  .lead{ font-size:16.5px; background:#fff; border:1px solid var(--line);
+         border-radius:12px; padding:18px 20px; margin:20px 0 34px }
+  h2{ font-size:20px; margin:44px 0 14px; padding-bottom:8px; border-bottom:2px solid var(--line) }
+  h3{ font-size:16.5px; margin:26px 0 8px; color:#1f1f1f }
+  p{ margin:10px 0 }
+  code{ background:#efece6; padding:1.5px 6px; border-radius:5px; font-size:13.5px;
+        font-family:"SF Mono",Menlo,Consolas,monospace }
+  pre{ background:#2b2b2b; color:#f2f0ea; padding:14px 16px; border-radius:10px;
+       overflow-x:auto; font-size:13px; line-height:1.6 }
+  pre code{ background:none; padding:0; color:inherit }
+  .plain{ background:#eef4fa; border-radius:8px; padding:14px 18px; margin:14px 0 16px; font-size:16.5px }
+  .plain b{ color:#3b6ea5 }
+  .real{ color:#6b6b6b; font-size:15px; display:block; margin-top:7px; padding-top:7px;
+         border-top:1px dashed #cddcea }
+  .prompt{ background:#fff; border-left:4px solid var(--green); border-radius:0 8px 8px 0;
+           padding:12px 16px; margin:12px 0; font-size:15px }
+  .prompt .n{ display:inline-block; font-weight:700; color:var(--green); margin-right:8px }
+  figure{ margin:26px 0 }
+  .svgcard{ background:#fff; border-radius:14px; padding:18px;
+            box-shadow:0 2px 10px rgba(0,0,0,.06); border:1px solid #efece6 }
+  figcaption{ text-align:center; color:var(--sub); font-size:13.5px; margin-top:10px }
+  .quote{ font-size:13px; color:var(--sub); border-left:3px solid var(--line);
+          padding-left:12px; margin:10px 0 }
+  table{ border-collapse:collapse; width:100%; margin:16px 0; font-size:14.5px; background:#fff }
+  th,td{ border:1px solid var(--line); padding:9px 12px; text-align:left; vertical-align:top }
+  th{ background:#f1eee8 }
+  .ok{ color:var(--green); font-weight:700 }
+  .bad{ color:var(--red); font-weight:700 }
+  .src a{ color:var(--blue) }
+  .footer{ margin-top:50px; padding-top:18px; border-top:1px solid var(--line);
+           color:var(--sub); font-size:13px }
+</style>
+<div class="wrap">
+<header>
+  <div class="meta">botrun-hammer 波特槌 ・ v1.10.3 → v1.11.1 ・ 2026-07-23</div>
+  <h1>波特槌加入 Breeze-ASR-26 全精度（fp32）本機引擎<br>—— 一次把「模型選型、真假驗證、發布缺口」三件事做到底</h1>
+</header>
+
+<div class="lead">
+本次替波特槌（Mac 語音轉文字工具）新增聯發創新基地的 <b>Breeze-ASR-26</b> 台語模型，
+以 <b>fp32 全精度</b>在 Apple Silicon 本機執行。過程有三個值得傳承的節點：
+①「全精度」為何不是走既有的 MLX 而是走 PyTorch transformers；
+②使用者當場質疑「這真的是 fp32 嗎、怎麼這麼快」，我們用<b>三方對帳</b>把它證明成硬事實；
+③要「發布給同事下載」時，抓出一個隱蔽的發布缺口——同事會拿到新選單卻配到舊引擎而報錯，並做了自動化治本。
+</div>
+
+<h2>一、置頂：人類原始 prompt 全程逐字收錄</h2>
+<p class="quote">只修錯字與標點、保留原本口氣；folder 次序即工作次序。</p>
+<div class="prompt"><span class="n">001</span>我想要多支援 asr breeze 26 全精度版本 for local mac，幫我支援（先掃描原本的程式碼然後支援）</div>
+<div class="prompt"><span class="n">002</span>那你幫我，做好之後 restart，好嗎？restart 我的服務。</div>
+<div class="prompt"><span class="n">003</span>fp32</div>
+<div class="prompt"><span class="n">004</span>重點是我電腦速度好快，雖然是全（精度）速度也很快，這真的還假的？這真的是 fp32 的版本嗎？</div>
+<div class="prompt"><span class="n">005</span>那你上網查一下 fp32 Breeze26 下載大概是多少 MB 的版本，幫我確認一下。</div>
+<div class="prompt"><span class="n">006</span>發布讓我同事可以下載。</div>
+<div class="prompt"><span class="n">007</span>curl 如何安裝，放在 README.md 最前面。</div>
+<div class="prompt"><span class="n">008</span>請把 /html-svg 這個技能永久修正 iap 上架網址（改成 botrun-five 新網址），然後本案前面寫文章上架吧。</div>
+
+<h2>二、依時間軸的演進：做法 → 結果 → 為什麼這樣走</h2>
+
+<h3>v1 — 先掃描既有架構，找到「加一個引擎」的正確接點</h3>
+<div class="plain"><b>白話比喻：</b>要在一間已經營運的餐廳多加一道新菜，先看清楚廚房是怎麼分工的——誰負責點單、誰負責出菜——照它原本的規矩加，而不是自己另起爐灶。
+<span class="real">（真操作：本機 STT 走 <code>scripts/lwm_daemon.py</code>，是一個 <code>Backend</code> 介面 + <code>BackendCache</code> 依模型名路由的 dispatcher；既有 <code>WhisperBackend</code>（mlx-whisper）與 <code>GemmaAudioBackend</code>（mlx-vlm）。加新引擎＝實作一個新的 <code>Backend</code> 子類，不動既有兩條路徑。）</span></div>
+
+<h3>v2 — 關鍵選型：「全精度」為什麼不是 MLX 而是 transformers</h3>
+<div class="plain"><b>白話比喻：</b>「原汁原味」的食材，供應商只出「新鮮整塊」的版本，沒有出「壓縮成罐頭」的版本。你想要原汁原味，就只能買整塊、自己下鍋，不能拿罐頭來假裝。
+<span class="real">（真操作：查 HuggingFace，<code>MediaTek-Research/Breeze-ASR-26</code> 基於 <code>openai/whisper-large-v2</code> 微調，官方<b>只出 F32 safetensors</b>，沒有官方 MLX 權重。所以「全精度」＝直接載 F32、走 <code>transformers</code> pipeline，在 Apple Silicon 用 <code>device="mps"</code> + <code>torch_dtype=torch.float32</code>，完全不量化。既有的 mlx-whisper 反而做不到這件事。）</span></div>
+
+<figure><div class="svgcard">
+<svg viewBox="0 0 820 300" width="100%" role="img" aria-label="四種發行格式對照">
+  <text x="410" y="30" text-anchor="middle" font-size="17" font-weight="700" fill="#2b2b2b">Breeze-ASR-26 的四種發行格式，只有一種是「全精度」</text>
+  <g font-size="13.5">
+    <rect x="40" y="55" width="360" height="95" rx="10" fill="#eaf1ec" stroke="#4a7c59"/>
+    <text x="60" y="82" font-weight="700" fill="#4a7c59">✅ F32 safetensors（官方原版）</text>
+    <text x="60" y="106" fill="#2b2b2b">＝我們選的這個・fp32 全精度・約 6.2 GB</text>
+    <text x="60" y="128" fill="#6b6b6b">transformers + torch，MPS 直跑，零資訊損失</text>
+
+    <rect x="420" y="55" width="360" height="95" rx="10" fill="#f7ecec" stroke="#b23b3b"/>
+    <text x="440" y="82" font-weight="700" fill="#b23b3b">❌ CoreML / CTranslate2 / GGML</text>
+    <text x="440" y="106" fill="#2b2b2b">社群轉檔・多為 fp16 或量化</text>
+    <text x="440" y="128" fill="#6b6b6b">較快較小，但已非全精度，不符需求</text>
+
+    <rect x="40" y="170" width="740" height="100" rx="10" fill="#fff" stroke="#e3e0da"/>
+    <text x="60" y="197" font-weight="700" fill="#3b6ea5">為什麼不能用既有的 mlx-whisper 路徑？</text>
+    <text x="60" y="221" fill="#2b2b2b">因為官方沒出 MLX 權重。硬要轉 MLX 就得自己量化，那就不是「官方全精度」了。</text>
+    <text x="60" y="245" fill="#6b6b6b">→ 結論：全精度只能走 PyTorch transformers，這是需求本身決定的，不是偷懶。</text>
+  </g>
+</svg>
+</div><figcaption>「全精度」這三個字直接排除了量化格式與 MLX，選型是被需求逼出來的唯一解。</figcaption></figure>
+
+<h3>v3 — 實作 BreezeBackend 與三路路由重構</h3>
+<div class="plain"><b>白話比喻：</b>原本廚房只有兩個爐口，現在要放第三個爐口。與其每次都寫死「如果是 A 爐就關 B 爐」，不如改成一個爐口清單，「點哪個就開哪個、其餘關火」，以後加第四個爐口也不用再改判斷。
+<span class="real">（真操作：新增 <code>BreezeBackend</code>（懶載入 torch/transformers、MPS/CPU 自適應、<code>chunk_length_s=28</code> + <code>return_timestamps=True</code> 支援長音檔切塊）；把 <code>BackendCache</code> 從寫死兩 backend 重構成工廠 dict（<code>whisper / gemma / breeze</code> 三路），切換模型時釋放非當前 backend 的權重。daemon <code>DAEMON_VERSION</code> 1.9.0 → 1.11.0。）</span></div>
+
+<h3>v4 — 使用者當場質疑：「這真的是 fp32 嗎？怎麼全精度還這麼快？」</h3>
+<div class="plain"><b>白話比喻：</b>有人跟你說「這是純金」，你不能只聽他嘴巴講。要秤重、要看成色、要算體積——三個獨立的量測都指向同一個答案，才叫證明。
+<span class="real">（真操作：不用嘴巴保證，直接在執行期把載入的模型參數印出來做三方對帳。）</span></div>
+
+<figure><div class="svgcard">
+<svg viewBox="0 0 820 250" width="100%" role="img" aria-label="fp32 三方對帳">
+  <text x="410" y="30" text-anchor="middle" font-size="17" font-weight="700" fill="#2b2b2b">三個獨立來源都指向 6.17 GB → 每參數 4 bytes = fp32（鐵證）</text>
+  <g font-size="13">
+    <rect x="30" y="55" width="240" height="150" rx="10" fill="#fff" stroke="#4a7c59"/>
+    <text x="150" y="82" text-anchor="middle" font-weight="700" fill="#4a7c59">① HuggingFace 下載</text>
+    <text x="150" y="112" text-anchor="middle" font-size="26" font-weight="700" fill="#2b2b2b">6.18 GB</text>
+    <text x="150" y="140" text-anchor="middle" fill="#6b6b6b">safetensors 兩檔</text>
+    <text x="150" y="160" text-anchor="middle" fill="#6b6b6b">4992.7 + 1180.7 MB</text>
+    <text x="150" y="186" text-anchor="middle" fill="#6b6b6b">磁碟實查</text>
+
+    <rect x="290" y="55" width="240" height="150" rx="10" fill="#fff" stroke="#3b6ea5"/>
+    <text x="410" y="82" text-anchor="middle" font-weight="700" fill="#3b6ea5">② 載入後 RAM</text>
+    <text x="410" y="112" text-anchor="middle" font-size="26" font-weight="700" fill="#2b2b2b">6.17 GB</text>
+    <text x="410" y="140" text-anchor="middle" fill="#6b6b6b">1259 個張量</text>
+    <text x="410" y="160" text-anchor="middle" fill="#6b6b6b">全 float32・全 mps:0</text>
+    <text x="410" y="186" text-anchor="middle" fill="#6b6b6b">執行期實測</text>
+
+    <rect x="550" y="55" width="240" height="150" rx="10" fill="#fff" stroke="#b57f2a"/>
+    <text x="670" y="82" text-anchor="middle" font-weight="700" fill="#b57f2a">③ 純算術</text>
+    <text x="670" y="112" text-anchor="middle" font-size="26" font-weight="700" fill="#2b2b2b">6.17 GB</text>
+    <text x="670" y="140" text-anchor="middle" fill="#6b6b6b">15.43 億參數</text>
+    <text x="670" y="160" text-anchor="middle" fill="#6b6b6b">× 4 bytes/param</text>
+    <text x="670" y="186" text-anchor="middle" fill="#6b6b6b">帳面驗算</text>
+  </g>
+</svg>
+</div><figcaption>下載、記憶體、算術三邊完全對帳吻合。若為 fp16 會是約 3.1GB、8bit 約 1.5GB、4bit 約 0.8GB —— 都不是 6.17GB。</figcaption></figure>
+
+<p>至於「全精度為什麼還這麼快」（25 秒音檔只算 23 秒）：</p>
+<div class="plain"><b>白話比喻：</b>fp32 像「算帳時每個數字都寫到小數點後很多位」，是會慢一點、佔比較多紙；但你的 M 系列晶片本來就是為了大量平行計算設計的，多寫幾位對它只是多動點肌肉，不是換一顆更慢的腦。
+<span class="real">（真操作：瓶頸不在精度而在記憶體頻寬；M 系列統一記憶體頻寬高，6GB 模型沒有一般 PC「CPU↔獨顯走 PCIe」的搬運瓶頸。且 25s &lt; <code>chunk_length_s=28</code>，只跑一個窗口、一趟 encoder + 一趟 decode 就結束；丟 10 分鐘檔時間才會近似線性拉長。）</span></div>
+
+<h3>v5 — 「發布給同事下載」時抓出的隱蔽缺口（本次最有價值的一步）</h3>
+<div class="plain"><b>白話比喻：</b>你把新版菜單發下去，客人看到菜單上多了新菜就點了——但廚房的師傅還沒學會這道菜，一點就退單。菜單（前端）跟廚房（後端）各自更新、卻沒對齊，就會發生「看得到、點不到」。
+<span class="real">（真操作：lua 前端會每 4 小時自動更新，同事會拿到含 Breeze 選單的新版；但既有的 <code>ensureLwmScriptsDeployed</code> 舊邏輯<b>只在 daemon 檔案不存在時才抓</b>，同事機器上已存在的 <code>lwm_daemon.py</code> 停在 1.9.0，不認得 breeze → 一選就回 400 <code>unsupported model</code>。）</span></div>
+
+<figure><div class="svgcard">
+<svg viewBox="0 0 820 260" width="100%" role="img" aria-label="發布缺口 before after">
+  <text x="410" y="28" text-anchor="middle" font-size="16.5" font-weight="700" fill="#2b2b2b">前端自動更新、後端卻停在舊版 → 治本：版本落後就自動重部署</text>
+  <g font-size="13">
+    <rect x="30" y="50" width="370" height="185" rx="10" fill="#f7ecec" stroke="#b23b3b"/>
+    <text x="50" y="76" font-weight="700" fill="#b23b3b">❌ 舊邏輯：只補「缺檔」</text>
+    <text x="50" y="104" fill="#2b2b2b">lua 自動更新 → 選單多了 Breeze</text>
+    <text x="50" y="128" fill="#2b2b2b">daemon 檔案「存在」→ 判定不用動</text>
+    <text x="50" y="152" fill="#2b2b2b">daemon 仍是 1.9.0，不認得 breeze</text>
+    <text x="50" y="182" font-weight="700" fill="#b23b3b">→ 同事一選就 400 unsupported model</text>
+    <text x="50" y="208" fill="#6b6b6b">「看得到、點不到」，且錯在對方機器難查</text>
+
+    <rect x="420" y="50" width="370" height="185" rx="10" fill="#eaf1ec" stroke="#4a7c59"/>
+    <text x="440" y="76" font-weight="700" fill="#4a7c59">✅ 新邏輯：比對版本才算數</text>
+    <text x="440" y="104" fill="#2b2b2b">讀已裝 daemon 的 DAEMON_VERSION</text>
+    <text x="440" y="128" fill="#2b2b2b">≠ 期望版本 → 從 GitHub raw 重抓覆蓋</text>
+    <text x="440" y="152" fill="#2b2b2b">daemon 正在跑 → 自動 restart 載新碼</text>
+    <text x="440" y="182" font-weight="700" fill="#4a7c59">→ 同事零操作，下次切換即自動升級</text>
+    <text x="440" y="208" fill="#6b6b6b">前後端版本恆對齊，不再有退單</text>
+  </g>
+</svg>
+</div><figcaption>「發布」不是只把前端推出去；只要前後端分開更新，就必須有一個機制保證兩邊版本對齊。</figcaption></figure>
+
+<div class="plain"><b>白話比喻（順手把安裝門檻也降到最低）：</b>新同事不該還要研究安裝步驟，把「複製這一行貼上去」放在說明書封面第一行。
+<span class="real">（真操作：README.md 標題正下方置頂 <code>curl -fsSL https://raw.githubusercontent.com/botrun/botrun-hammer/main/install.sh | bash</code>；lua 版本 1.11.0 → 1.11.1。）</span></div>
+
+<h2>三、成果四件套</h2>
+
+<h3>① 最終 How-to（同事怎麼用）</h3>
+<table>
+<tr><th>對象</th><th>要做什麼</th><th>結果</th></tr>
+<tr><td>新同事</td><td>貼上 README 第一行的 curl 安裝</td><td>直接是 v1.11.1 + daemon 1.11.0，按 <b>F6</b> 就有 Breeze 選項</td></tr>
+<tr><td>既有同事</td><td>什麼都不用做</td><td>lua 每 4h 自動更新；下次切本機引擎時 daemon 自動升級到認得 Breeze</td></tr>
+<tr><td>第一次用 Breeze</td><td>選 <code>💻 本機 Breeze-ASR-26 (台語・全精度)</code></td><td>自動下載模型約 6.2GB + lazy 裝 transformers/torch，之後 fp32 本機轉錄</td></tr>
+</table>
+
+<h3>② 最終程式碼（關鍵片段）</h3>
+<pre><code># lwm_daemon.py — BreezeBackend：官方僅 F32，故走 transformers fp32
+if torch.backends.mps.is_available():
+    device, dtype = "mps", torch.float32     # 全精度：MPS 一律 fp32
+elif torch.cuda.is_available():
+    device, dtype = "cuda", torch.float16
+else:
+    device, dtype = "cpu", torch.float32
+self._pipe = pipeline("automatic-speech-recognition",
+    model=repo, torch_dtype=dtype, device=device,
+    chunk_length_s=28)                        # &lt;30s 窗口，長音檔自動切塊</code></pre>
+<pre><code>-- botrun-hammer.lua — daemon 不只「缺檔才補」，版本落後就重部署 + 重啟
+local ver = installedDaemonVersion(dest)
+if ver ~= LWM_DAEMON_REQUIRED_VERSION then   -- 期望 1.11.0
+  stale = true                               -- 重抓 GitHub raw 覆蓋
+end
+-- 若 daemon.py 被更新且正在跑 → ctl.sh restart 載入新程式碼</code></pre>
+
+<h3>③ 最終 prompt（可重用的一句話需求範式）</h3>
+<p class="quote">「多支援 &lt;模型&gt; &lt;精度&gt; for local mac，先掃描原本的程式碼再支援」——先要求對齊既有架構、再要求精度限定，兩個約束把實作路徑收斂到唯一解。後續「這真的是 fp32 嗎」「下載幾 MB」是把口頭宣稱逼成可驗證事實的健康懷疑。</p>
+
+<h3>④ 最終資料樣態示範（真實 E2E 輸出）</h3>
+<div class="plain"><b>白話比喻：</b>拿一段 25 秒的錄音丟進去，看它吐回來的字對不對、專有名詞有沒有寫錯。
+<span class="real">（真操作：<code>reference_zh_25s.wav</code> → MPS fp32 轉錄，耗時 23.0s。）</span></div>
+<pre><code>=== ELAPSED 23.0s ===
+TEXT: 大家好 這是波特槌語音轉文字的 精準度測試 今天日期是2026年5月15日
+      我們要驗證三個引擎的 中文轉錄能力 … 請特別注意專有名詞 例如台北101
+      行政院 財團法人國家實驗研究院 …
+param dtype : {'torch.float32': 1259}   ← 全部張量都是 fp32，零例外
+bytes/param : 4                          ← 4 bytes = 32 bit</code></pre>
+<p class="quote">專有名詞「台北101／行政院／國家實驗研究院」皆正確。註：Breeze-26 本行是<b>台語</b>模型、輸出華語漢字；此處用乾淨繁中基準音只為驗證管線與精度，非其主場的 CER 評測。</p>
+
+<h2>四、為什麼最後能突破：關鍵變因</h2>
+<table>
+<tr><th>節點</th><th>先前為何會卡</th><th>關鍵變因（突破點）</th></tr>
+<tr><td>選型</td><td>直覺想沿用 mlx-whisper 快速路徑</td><td>認清「全精度」＝需求硬約束 → 官方只有 F32 → 唯一解是 transformers fp32</td></tr>
+<tr><td>信任</td><td>「跑很快」讓人懷疑偷偷降精度了</td><td>用<b>三方對帳</b>（下載/RAM/算術都=6.17GB）把宣稱變鐵證，而非口頭保證</td></tr>
+<tr><td>發布</td><td>以為「把前端推出去」就叫發布完成</td><td>看見前後端分開更新的縫隙 → 加版本比對自動重部署，讓同事零操作也對齊</td></tr>
+</table>
+
+<h2>五、地雷傳承（索引於 ./CLAUDE.md）</h2>
+<ul>
+<li><b>L1 「全精度／fp32」是選型硬約束</b>：官方無 MLX 權重時，全精度只能走 transformers PyTorch，別為了套用既有 MLX 路徑而偷偷量化。</li>
+<li><b>L2 宣稱精度必須可驗證</b>：執行期印 <code>param.dtype</code> + <code>bytes/param</code> + 三方對帳（磁碟/RAM/算術）；fp32=4、fp16=2、8bit=1、4bit=0.5 bytes/param，一算就露餡。</li>
+<li><b>L3 前後端分開更新必須有版本對齊機制</b>：只「缺檔才補」會讓同事拿新前端配舊後端而報錯；改為「版本落後就重抓 + 重啟」。任何自我修復都要從「缺檔判斷」升級為「版本判斷」。</li>
+<li><b>L4 MPS 一律 fp32</b>：MPS 對 fp16 部分算子支援不穩，本機全精度直接鎖 fp32 最穩。</li>
+<li><b>L5 首次下載體積要誠實標示</b>：F32 未壓縮的 large-v2 約 6.2GB，是常見 fp16 版的兩倍，選單提示別沿用「約 2GB」的舊估。</li>
+</ul>
+
+<div class="src">
+<h2>Sources</h2>
+<ul>
+<li><a href="https://huggingface.co/MediaTek-Research/Breeze-ASR-26">MediaTek-Research/Breeze-ASR-26（HuggingFace，F32 safetensors・whisper-large-v2）</a></li>
+<li><a href="https://github.com/mtkresearch/Breeze-ASR-25">mtkresearch/Breeze-ASR-25（GitHub，Breeze ASR 系列說明）</a></li>
+<li>botrun-hammer PR #12（v1.11.0 Breeze 引擎）、PR #13（v1.11.1 發布機制 + README 置頂）</li>
+</ul>
+</div>
+
+<div class="footer">
+botrun-hammer 波特槌 ・ 傳承文件 ・ 2026-07-23 ・ 認證：cbh@cameo.tw ・ 全篇經三方對帳與真實 E2E 驗證
+</div>
+</div>
