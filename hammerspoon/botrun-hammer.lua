@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.11.0 - Mac 語音轉文字
+  🔨 波特槌 v1.11.1 - Mac 語音轉文字
 
   由 Vertex AI Gemini（gcloud ADC 認證）驅動的語音輸入助手
 
@@ -24,7 +24,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.11.0"
+local VERSION = "1.11.1"
 
 -- 開機自動啟動 Hammerspoon（v1.7.11）
 pcall(function() hs.autoLaunch(true) end)
@@ -1508,33 +1508,74 @@ end
 -- v1.7.3: 升級路徑自我修復
 -- auto-update 只會拉這份 lua；daemon 腳本若缺（既有使用者升級到首次有 LWM 的版本），
 -- 從 GitHub raw 抓回來。沿用 auto-update 的 hs.http 非同步機制，不阻塞啟動。
+-- v1.11.1: 不只「缺檔才補」，還要「版本落後就重新部署」——
+--   否則同事的 lua auto-update 到新版、選單多了 Breeze，但 daemon 還是舊版
+--   （不認得新模型）→ 選了就 400。故新增版本比對 + 重新抓 + 重啟 daemon。
 local LWM_RAW_BASE = "https://raw.githubusercontent.com/botrun/botrun-hammer/main/scripts"
+-- 這份 lua 期望的 daemon 版本；每次改 lwm_daemon.py 的 DAEMON_VERSION 就同步這裡
+local LWM_DAEMON_REQUIRED_VERSION = "1.11.0"
 local LWM_REQUIRED_FILES = {
-  { name = "lwm_daemon.py",      mode = "0755" },
+  { name = "lwm_daemon.py",      mode = "0755", versioned = true },
   { name = "lwm_daemon_ctl.sh",  mode = "0755" },
 }
+
+-- 讀已安裝 daemon 的 DAEMON_VERSION（讀不到回 nil）
+local function installedDaemonVersion(daemonPath)
+  local fh = io.open(daemonPath, "r")
+  if not fh then return nil end
+  local content = fh:read("*a")
+  fh:close()
+  return content and content:match('DAEMON_VERSION%s*=%s*"([%d%.]+)"') or nil
+end
 
 local function ensureLwmScriptsDeployed(onComplete)
   local scriptDir = os.getenv("HOME") .. "/.botrun-hammer/scripts"
   os.execute("mkdir -p '" .. scriptDir .. "'")
 
   local missing = {}
+  local daemonRefreshed = false  -- lwm_daemon.py 是否被重新抓（缺檔或版本落後）
   for _, f in ipairs(LWM_REQUIRED_FILES) do
     local dest = scriptDir .. "/" .. f.name
-    if not hs.fs.attributes(dest) then
-      table.insert(missing, { name = f.name, dest = dest, mode = f.mode })
+    local attrs = hs.fs.attributes(dest)
+    local stale = false
+    if attrs and f.versioned then
+      local ver = installedDaemonVersion(dest)
+      if ver ~= LWM_DAEMON_REQUIRED_VERSION then
+        stale = true
+        lwmLog(string.format("self-heal: %s version %s != required %s, will redeploy",
+          f.name, tostring(ver), LWM_DAEMON_REQUIRED_VERSION))
+      end
+    end
+    if not attrs or stale then
+      table.insert(missing, { name = f.name, dest = dest, mode = f.mode, versioned = f.versioned })
     end
   end
 
   if #missing == 0 then
-    lwmLog("daemon scripts already deployed")
+    lwmLog("daemon scripts already deployed (version ok)")
     if onComplete then onComplete(true) end
     return
   end
 
-  lwmLog("self-heal: " .. #missing .. " daemon script(s) missing, fetching from GitHub raw...")
+  lwmLog("self-heal: " .. #missing .. " daemon script(s) missing/stale, fetching from GitHub raw...")
   local pending = #missing
   local allOk = true
+
+  local function finishOne()
+    pending = pending - 1
+    if pending > 0 then return end
+    -- 若 daemon.py 被更新且 daemon 正在跑，必須重啟才會載入新程式碼
+    if daemonRefreshed and allOk and readSmallFile(config.lwm.portFile) then
+      lwmLog("daemon.py refreshed while running -> restart to load new version")
+      local rt = hs.task.new("/bin/bash", function(code, _, _)
+        lwmLog("post-refresh daemon restart exit=" .. tostring(code))
+        if onComplete then onComplete(allOk) end
+      end, {config.lwm.ctlScript, "restart"})
+      rt:start()
+    else
+      if onComplete then onComplete(allOk) end
+    end
+  end
 
   for _, f in ipairs(missing) do
     local url = LWM_RAW_BASE .. "/" .. f.name
@@ -1546,6 +1587,7 @@ local function ensureLwmScriptsDeployed(onComplete)
           fh:write(body)
           fh:close()
           os.execute("chmod " .. f.mode .. " '" .. f.dest .. "'")
+          if f.versioned then daemonRefreshed = true end
           lwmLog("self-heal saved " .. f.name .. " (" .. #body .. " bytes)")
         else
           lwmLog("ERROR: cannot write " .. f.dest)
@@ -1555,8 +1597,7 @@ local function ensureLwmScriptsDeployed(onComplete)
         lwmLog("ERROR: GitHub fetch failed " .. f.name .. " status=" .. tostring(status))
         allOk = false
       end
-      pending = pending - 1
-      if pending == 0 and onComplete then onComplete(allOk) end
+      finishOne()
     end)
   end
 end
