@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.10.0 - Mac 語音轉文字
+  🔨 波特槌 v1.10.1 - Mac 語音轉文字
 
   由 Vertex AI Gemini（gcloud ADC 認證）驅動的語音輸入助手
 
@@ -24,7 +24,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.10.0"
+local VERSION = "1.10.1"
 
 -- 開機自動啟動 Hammerspoon（v1.7.11）
 pcall(function() hs.autoLaunch(true) end)
@@ -48,7 +48,9 @@ local config = {
     -- ⚠️ location 只有 global / us / asia-southeast1 有這顆模型，其餘回 404
     location = "global",
     -- 預設專案（可用 .env 的 VERTEX_PROJECT 覆寫）；需有 roles/aiplatform.user
-    defaultProject = "botrun-chat",
+    -- v1.10.1：全面改用專屬 GCP 專案 botrun-hammer
+    -- https://console.cloud.google.com/welcome?project=botrun-hammer
+    defaultProject = "botrun-hammer",
     -- inline base64 請求上限約 20MB，留安全邊際
     maxUploadBytes = 15 * 1024 * 1024,
     -- access token 快取秒數（實際有效期 1 小時，提早換發）
@@ -193,6 +195,9 @@ end
 -- Vertex 專案（.env 的 VERTEX_PROJECT 優先，否則用預設）
 local function getVertexProject()
   local p = getEnvKey("VERTEX_PROJECT")
+  -- v1.10.1 migrate：botrun-chat 是 v1.10.0 的暫用預設，一律改指本案專屬專案
+  -- （自動更新只換 lua 不重跑 install.sh，所以這裡也要接住）
+  if p == "botrun-chat" then p = nil end
   if p and p ~= "" then return p end
   return config.vertex.defaultProject
 end
@@ -237,16 +242,23 @@ local function guideGcloudInstall()
   )
 end
 
--- 引導權限不足（403）
+-- 引導權限不足（403）：夥伴第一次使用最常見的狀況
+-- 直接把「要貼給管理者的那句話」放進剪貼簿，含自己的 Google 帳號
 local function guideVertexPermission(project)
-  local cmd = "gcloud auth application-default login"
-  hs.pasteboard.setContents(cmd)
+  local account = ""
+  local gcloudPath = getGcloudPath()
+  if gcloudPath then
+    local out = hs.execute("\"" .. gcloudPath .. "\" config get-value account 2>/dev/null")
+    account = (out or ""):gsub("%s+$", "")
+  end
+  if account == "" then account = "（你的 Google 帳號）" end
+
+  hs.pasteboard.setContents("請幫我開通波特槌語音轉文字：" .. account)
   hs.alert.show(
-    "🚫 專案「" .. tostring(project) .. "」沒有 Vertex AI 權限" ..
-    "\n\n請找 GCP 管理者授予 roles/aiplatform.user，" ..
-    "\n或在 ~/.botrun-hammer/.env 設定可用專案：" ..
-    "\nVERTEX_PROJECT=你的專案ID" ..
-    "\n\n（重新登入指令已複製到剪貼簿）",
+    "🚫 你的帳號還沒有「" .. tostring(project) .. "」專案的使用權限" ..
+    "\n\n帳號：" .. account ..
+    "\n已把開通請求複製到剪貼簿，貼給波特槌管理者即可" ..
+    "\n（管理者授予 roles/aiplatform.user 後，直接按 F5 就會通）",
     10
   )
 end

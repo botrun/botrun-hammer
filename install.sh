@@ -87,6 +87,13 @@ if ! command -v jq &> /dev/null; then
 fi
 echo -e "${GREEN}✅ jq 已安裝${NC}"
 
+echo "🔍 檢查 gcloud（Google Cloud SDK，語音轉文字認證用）..."
+if [[ ! -x /opt/homebrew/bin/gcloud && ! -x /usr/local/bin/gcloud && ! -x /usr/bin/gcloud && ! -x "$HOME/google-cloud-sdk/bin/gcloud" ]]; then
+    echo "⚠️ gcloud 未安裝，正在安裝（約 1-2 分鐘）..."
+    brew install --cask gcloud-cli < /dev/null || brew install --cask google-cloud-sdk < /dev/null || true
+fi
+echo -e "${GREEN}✅ gcloud 檢查完成${NC}"
+
 echo "🔍 檢查 opencc（簡繁轉換，可選）..."
 if ! command -v opencc &> /dev/null; then
     echo "⚠️ opencc 未安裝，正在安裝..."
@@ -283,12 +290,56 @@ fi
 
 # 3) Vertex 專案（需有 roles/aiplatform.user）
 if ! grep -q "^VERTEX_PROJECT=" "$ENV_FILE" 2>/dev/null; then
-    echo "VERTEX_PROJECT=botrun-chat" >> "$ENV_FILE"
+    echo "VERTEX_PROJECT=botrun-hammer" >> "$ENV_FILE"
 fi
 if ! grep -q "^VERTEX_LOCATION=" "$ENV_FILE" 2>/dev/null; then
     echo "VERTEX_LOCATION=global" >> "$ENV_FILE"
 fi
+# 升級路徑：舊版預設專案（botrun-chat）自動改為本案專屬專案
+if grep -q "^VERTEX_PROJECT=botrun-chat$" "$ENV_FILE" 2>/dev/null; then
+    sed -i '' 's|^VERTEX_PROJECT=botrun-chat$|VERTEX_PROJECT=botrun-hammer|' "$ENV_FILE"
+    echo -e "${YELLOW}🔁 VERTEX_PROJECT 已更新為本案專屬專案 botrun-hammer${NC}"
+fi
+
 printf "%b   Vertex 專案: %s (可編輯 %s 更換)%b\n" "$CYAN" "$(grep '^VERTEX_PROJECT=' "$ENV_FILE" | cut -d= -f2)" "$ENV_FILE" "$NC"
+
+# 4) 連線實測：真的打一次 Vertex AI，確認這台機器現在就能轉錄
+if [[ -n "${GCLOUD_BIN:-}" ]]; then
+    VP=$(grep '^VERTEX_PROJECT=' "$ENV_FILE" | cut -d= -f2)
+    VL=$(grep '^VERTEX_LOCATION=' "$ENV_FILE" | cut -d= -f2)
+    ADC_TOKEN=$("$GCLOUD_BIN" auth application-default print-access-token 2>/dev/null || true)
+    if [[ -n "$ADC_TOKEN" ]]; then
+        echo ""
+        printf "🔍 實測 Vertex AI 連線: %s / %s ...\n" "$VP" "$VL"
+        # ⚠️ 絕不可加 x-goog-user-project header（會被擋成 HTML 404）
+        VTEST_CODE=$(curl -s -o /tmp/botrun-hammer-vertex-test.json -w '%{http_code}' \
+            -X POST "https://aiplatform.googleapis.com/v1/projects/$VP/locations/$VL/publishers/google/models/gemini-3.5-flash:generateContent" \
+            -H "Authorization: Bearer $ADC_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"contents":[{"role":"user","parts":[{"text":"ok"}]}],"generationConfig":{"maxOutputTokens":8}}' || echo "000")
+        MY_ACCOUNT=$("$GCLOUD_BIN" config get-value account 2>/dev/null)
+        if [[ "$VTEST_CODE" == "200" ]]; then
+            echo -e "${GREEN}✅ Vertex AI 連線正常，語音轉文字可以直接使用${NC}"
+        elif [[ "$VTEST_CODE" == "403" ]]; then
+            echo -e "${RED}❌ 你的 Google 帳號還沒有 $VP 專案的使用權限${NC}"
+            echo ""
+            echo -e "   請把下面這行貼給波特槌管理者，請他幫你開通："
+            echo ""
+            printf "   %b請幫我開通波特槌：%s%b\n" "$BOLD" "$MY_ACCOUNT" "$NC"
+            echo ""
+            echo -e "   （管理者端執行：）"
+            printf "   %bgcloud projects add-iam-policy-binding %s \\%b\n" "$BOLD" "$VP" "$NC"
+            printf "   %b  --member=\"user:%s\" --role=\"roles/aiplatform.user\"%b\n" "$BOLD" "$MY_ACCOUNT" "$NC"
+            echo ""
+            echo -e "   開通後不用重裝，直接按 F5 就會通。"
+        else
+            echo -e "${YELLOW}⚠️ Vertex AI 連線測試回應 HTTP $VTEST_CODE${NC}"
+            echo -e "   詳情：/tmp/botrun-hammer-vertex-test.json"
+            echo -e "   多半是尚未登入 ADC，請執行：${BOLD}gcloud auth application-default login${NC}"
+        fi
+        rm -f /tmp/botrun-hammer-vertex-test.json
+    fi
+fi
 
 # 移除舊版 NCHC key（如果存在）
 if grep -q "NCHC_GENAI_API_KEY" "$ENV_FILE" 2>/dev/null; then

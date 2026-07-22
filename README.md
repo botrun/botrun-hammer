@@ -14,7 +14,7 @@
 |------|------|----------|
 | **macOS 10.15+** | 唯一支援的作業系統 | 你的 Mac |
 | **gcloud CLI + ADC 登入** | 雲端轉錄認證（v1.10.0 起不用 API Key） | `brew install --cask gcloud-cli` 後 `gcloud auth application-default login` |
-| **有 Vertex AI 權限的 GCP 專案** | 呼叫 gemini-3.5-flash | 需 `roles/aiplatform.user`；預設 `botrun-chat`，可在 `.env` 用 `VERTEX_PROJECT` 更換 |
+| **有 Vertex AI 權限的 GCP 專案** | 呼叫 gemini-3.5-flash | 專屬專案 [`botrun-hammer`](https://console.cloud.google.com/welcome?project=botrun-hammer)（預設值）；需 `roles/aiplatform.user` |
 
 > 其他依賴（Homebrew、Hammerspoon、ffmpeg、jq、opencc）安裝腳本會**自動處理**
 
@@ -135,23 +135,46 @@ gcloud auth application-default login   # 瀏覽器授權，一次即可
 
 ### 選擇 Vertex 專案
 
-預設 `botrun-chat`。要換成自己的專案（需有 `roles/aiplatform.user`）：
+**本專案一律使用專屬 GCP 專案 [`botrun-hammer`](https://console.cloud.google.com/welcome?project=botrun-hammer)**（`VERTEX_PROJECT` 預設值，無須設定）。
+
+若要改用其他專案（需有 `roles/aiplatform.user`）：
 
 ```bash
 nano ~/.botrun-hammer/.env
 ```
 
 ```
-VERTEX_PROJECT=你的專案ID
-VERTEX_LOCATION=global      # 只有 global / us / asia-southeast1 有 gemini-3.5-flash
+VERTEX_PROJECT=botrun-hammer   # 預設；改成你自己的專案 ID 才需要設
+VERTEX_LOCATION=global         # 只有 global / us / asia-southeast1 有 gemini-3.5-flash
 ```
+
+### 夥伴第一次使用（管理者需開通一次）
+
+波特槌用**你自己的 Google 帳號**跑 ADC，但呼叫的是共用專案 `botrun-hammer`，所以管理者要幫你的帳號開通一次：
+
+1. 你執行安裝腳本，它會自動實測一次連線
+2. 若顯示 403，腳本會把這句複製到你的剪貼簿：`請幫我開通波特槌語音轉文字：你的帳號@gmail.com`
+3. 貼給管理者，管理者執行：
+   ```bash
+   gcloud projects add-iam-policy-binding botrun-hammer \
+     --member="user:夥伴帳號@gmail.com" --role="roles/aiplatform.user"
+   ```
+4. 開通後**不用重裝**，直接按 F5 就會通
+
+### 更新
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/botrun/botrun-hammer/main/install.sh | bash
+```
+
+重跑安裝腳本即可升級（設定與 ADC 登入都會保留）。程式本身每 4 小時也會自動檢查 GitHub 上的新版並更新。
 
 ### 常見錯誤
 
 | 畫面提示 | 原因 | 處理 |
 |---|---|---|
 | 🔑 尚未登入 Google Cloud ADC | 沒登入或憑證過期 | 指令已自動複製到剪貼簿，貼上執行即可 |
-| 🚫 專案沒有 Vertex AI 權限 | 該 GCP 專案缺 `roles/aiplatform.user` | 找管理者授權，或改 `VERTEX_PROJECT` |
+| 🚫 你的帳號還沒有專案使用權限 | 帳號未被加進 `botrun-hammer` | 剪貼簿已備好開通請求，貼給管理者即可 |
 | ⚠️ 錄音太長超過雲端單次上限 | 單次 inline 上限約 15MB | 改用 F6 選單的本機引擎 |
 
 ### 設定 NCHC API Key（備援）
@@ -246,7 +269,7 @@ curl -fsSL https://raw.githubusercontent.com/botrun/botrun-hammer/main/install.s
    brew install --cask gcloud-cli
    gcloud auth application-default login
    ```
-2. Optional — point at your own GCP project (needs `roles/aiplatform.user`) in `~/.botrun-hammer/.env`:
+2. The app uses the dedicated GCP project [`botrun-hammer`](https://console.cloud.google.com/welcome?project=botrun-hammer) by default. To use your own (needs `roles/aiplatform.user`), set it in `~/.botrun-hammer/.env`:
    ```
    VERTEX_PROJECT=your-project-id
    ```
