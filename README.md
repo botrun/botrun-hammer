@@ -14,7 +14,7 @@
 |------|------|----------|
 | **macOS 10.15+** | 唯一支援的作業系統 | 你的 Mac |
 | **gcloud CLI + ADC 登入** | 雲端轉錄認證（v1.10.0 起不用 API Key） | `brew install --cask gcloud-cli` 後 `gcloud auth application-default login` |
-| **有 Vertex AI 權限的 GCP 專案** | 呼叫 gemini-3.5-flash | 專屬專案 [`botrun-hammer`](https://console.cloud.google.com/welcome?project=botrun-hammer)（預設值）；**@cameo.tw 全網域已授權**，外部帳號需管理者加 `roles/aiplatform.user` |
+| **有 Vertex AI 權限的 GCP 專案** | 呼叫 gemini-3.5-flash | 專屬專案 [`botrun-hammer`](https://console.cloud.google.com/welcome?project=botrun-hammer)（預設值）；**@cameo.tw 全網域已授權**（最小權限角色 `botrunHammerPredict`），外部帳號需管理者加入 |
 
 > 其他依賴（Homebrew、Hammerspoon、ffmpeg、jq、opencc）安裝腳本會**自動處理**
 
@@ -137,7 +137,7 @@ gcloud auth application-default login   # 瀏覽器授權，一次即可
 
 **本專案一律使用專屬 GCP 專案 [`botrun-hammer`](https://console.cloud.google.com/welcome?project=botrun-hammer)**（`VERTEX_PROJECT` 預設值，無須設定）。
 
-若要改用其他專案（需有 `roles/aiplatform.user`）：
+若要改用其他專案（該專案需給你 `aiplatform.endpoints.predict` 權限）：
 
 ```bash
 nano ~/.botrun-hammer/.env
@@ -150,7 +150,7 @@ VERTEX_LOCATION=global         # 只有 global / us / asia-southeast1 有 gemini
 
 ### 夥伴第一次使用
 
-**@cameo.tw 同仁：不需要任何人開通。** `botrun-hammer` 專案已對整個 `cameo.tw` 網域授予 `roles/aiplatform.user`，你只要：
+**@cameo.tw 同仁：不需要任何人開通。** `botrun-hammer` 專案已對整個 `cameo.tw` 網域授予最小權限角色 `botrunHammerPredict`（只能呼叫模型推論），你只要：
 
 ```bash
 gcloud auth application-default login   # 選帳號時選你的 @cameo.tw 帳號
@@ -162,8 +162,11 @@ gcloud auth application-default login   # 選帳號時選你的 @cameo.tw 帳號
 
 ```bash
 gcloud projects add-iam-policy-binding botrun-hammer \
-  --member="user:夥伴帳號@example.com" --role="roles/aiplatform.user"
+  --member="user:夥伴帳號@example.com" \
+  --role="projects/botrun-hammer/roles/botrunHammerPredict"
 ```
+
+> 這是自訂的**最小權限角色**，只含 `aiplatform.endpoints.predict`（語音轉文字唯一需要的權限），拿不到訓練、部署端點、刪除資源等能力。
 
 兩種情況都**不用重裝**，處理完直接按 F5 就會通。
 
@@ -276,7 +279,7 @@ curl -fsSL https://raw.githubusercontent.com/botrun/botrun-hammer/main/install.s
    brew install --cask gcloud-cli
    gcloud auth application-default login
    ```
-2. The app uses the dedicated GCP project [`botrun-hammer`](https://console.cloud.google.com/welcome?project=botrun-hammer) by default. To use your own (needs `roles/aiplatform.user`), set it in `~/.botrun-hammer/.env`:
+2. The app uses the dedicated GCP project [`botrun-hammer`](https://console.cloud.google.com/welcome?project=botrun-hammer) by default. To use your own (needs `aiplatform.endpoints.predict`), set it in `~/.botrun-hammer/.env`:
    ```
    VERTEX_PROJECT=your-project-id
    ```
