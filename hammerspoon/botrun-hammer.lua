@@ -1,7 +1,7 @@
 --[[
-  🔨 波特槌 v1.9.4 - Mac 語音轉文字
+  🔨 波特槌 v1.10.0 - Mac 語音轉文字
 
-  由 Gemini API 驅動的語音輸入助手
+  由 Vertex AI Gemini（gcloud ADC 認證）驅動的語音輸入助手
 
   功能：
   - F5 開始/停止錄音
@@ -19,11 +19,12 @@
   - Hammerspoon
   - ffmpeg (brew install ffmpeg)
   - jq (brew install jq)
-  - GEMINI_API_KEY 環境變數
+  - gcloud CLI + ADC 登入（gcloud auth application-default login）
+    ※ v1.10.0 起永久移除 GEMINI_API_KEY，雲端轉錄一律走 ADC
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.9.4"
+local VERSION = "1.10.0"
 
 -- 開機自動啟動 Hammerspoon（v1.7.11）
 pcall(function() hs.autoLaunch(true) end)
@@ -39,10 +40,26 @@ local SCRIPT_PATH = debug.getinfo(1, "S").source:match("^@(.+)$")
 local config = {
   language = "zh",
 
-  -- Gemini API
-  geminiApiUrl = "https://generativelanguage.googleapis.com/v1beta",
+  -- Vertex AI（v1.10.0：全面改用 gcloud ADC，永久移除 API key）
+  -- 公司已停用 Gemini API key（曾遭盜用），雲端轉錄一律走 Application Default Credentials
   geminiModel = "gemini-3.5-flash",
-  geminiUploadUrl = "https://generativelanguage.googleapis.com/upload/v1beta/files",
+  vertex = {
+    host = "https://aiplatform.googleapis.com",
+    -- ⚠️ location 只有 global / us / asia-southeast1 有這顆模型，其餘回 404
+    location = "global",
+    -- 預設專案（可用 .env 的 VERTEX_PROJECT 覆寫）；需有 roles/aiplatform.user
+    defaultProject = "botrun-chat",
+    -- inline base64 請求上限約 20MB，留安全邊際
+    maxUploadBytes = 15 * 1024 * 1024,
+    -- access token 快取秒數（實際有效期 1 小時，提早換發）
+    tokenTtl = 50 * 60,
+    gcloudPaths = {
+      "/opt/homebrew/bin/gcloud",
+      "/usr/local/bin/gcloud",
+      "/usr/bin/gcloud",
+      os.getenv("HOME") .. "/google-cloud-sdk/bin/gcloud",
+    },
+  },
 
   -- 錄音設定
   -- v1.6.6: 改用 Application Support 避開 iCloud Drive Documents 同步干擾（否則長錄音可能被搬離本地）
@@ -161,9 +178,77 @@ local function getEnvKey(keyName)
   return nil
 end
 
--- 取得 Gemini API Key
-local function getGeminiApiKey()
-  return getEnvKey("GEMINI_API_KEY")
+-- ========================================
+-- gcloud ADC（v1.10.0：雲端轉錄唯一認證方式，API key 已永久移除）
+-- ========================================
+
+-- 找 gcloud 執行檔（hs.task 的 PATH 不含 Homebrew，必須用絕對路徑）
+local function getGcloudPath()
+  for _, p in ipairs(config.vertex.gcloudPaths) do
+    if hs.fs.attributes(p) then return p end
+  end
+  return nil
+end
+
+-- Vertex 專案（.env 的 VERTEX_PROJECT 優先，否則用預設）
+local function getVertexProject()
+  local p = getEnvKey("VERTEX_PROJECT")
+  if p and p ~= "" then return p end
+  return config.vertex.defaultProject
+end
+
+local function getVertexLocation()
+  local l = getEnvKey("VERTEX_LOCATION")
+  if l and l ~= "" then return l end
+  return config.vertex.location
+end
+
+-- ADC 狀態檢查（同步、輕量：只看憑證檔存在與否，不打網路）
+local function adcCredentialsExist()
+  local p = os.getenv("HOME") .. "/.config/gcloud/application_default_credentials.json"
+  return hs.fs.attributes(p) ~= nil
+end
+
+-- 引導使用者登入 ADC：指令複製進剪貼簿 + 開 Terminal，讓使用者直接貼上執行
+local function guideAdcLogin(reasonText)
+  local cmd = "gcloud auth application-default login"
+  hs.pasteboard.setContents(cmd)
+  hs.alert.show(
+    "🔑 " .. (reasonText or "需要 Google Cloud 授權") ..
+    "\n\n已複製指令到剪貼簿，請在終端機貼上執行：\n" .. cmd ..
+    "\n\n登入後回來按 F5 即可繼續",
+    8
+  )
+  hs.timer.doAfter(1, function()
+    -- 注意：此處不能用 shellQuote（宣告在本函式之後，Lua local 尚未可見）
+    hs.execute("open -a Terminal \"" .. os.getenv("HOME") .. "\"")
+  end)
+end
+
+-- 引導安裝 gcloud
+local function guideGcloudInstall()
+  local cmd = "brew install --cask gcloud-cli"
+  hs.pasteboard.setContents(cmd)
+  hs.alert.show(
+    "🔧 找不到 gcloud（Google Cloud SDK）" ..
+    "\n\n已複製安裝指令到剪貼簿：\n" .. cmd ..
+    "\n裝好後執行：gcloud auth application-default login",
+    8
+  )
+end
+
+-- 引導權限不足（403）
+local function guideVertexPermission(project)
+  local cmd = "gcloud auth application-default login"
+  hs.pasteboard.setContents(cmd)
+  hs.alert.show(
+    "🚫 專案「" .. tostring(project) .. "」沒有 Vertex AI 權限" ..
+    "\n\n請找 GCP 管理者授予 roles/aiplatform.user，" ..
+    "\n或在 ~/.botrun-hammer/.env 設定可用專案：" ..
+    "\nVERTEX_PROJECT=你的專案ID" ..
+    "\n\n（重新登入指令已複製到剪貼簿）",
+    10
+  )
 end
 
 -- ========================================
@@ -913,120 +998,168 @@ end
 
 
 -- 呼叫 Gemini API（備案）
+-- 呼叫 Vertex AI Gemini 轉錄（v1.10.0：gcloud ADC，無 API key）
+-- 流程：ADC token → ffmpeg 轉 opus（壓縮至 inline 可承載）→ base64 inline → generateContent
+-- shell exit code 契約（給 Lua 端做「清晰引導」）：
+--   90 = ADC 未登入 / token 取不到；91 = 音檔過大；92 = 403 權限不足
+--   93 = ffmpeg 轉檔失敗；94 = 其他 HTTP 錯誤
 local function transcribeWithGemini(recordingFile, callback)
-  local apiKey = getGeminiApiKey()
+  local gcloudPath = getGcloudPath()
+  local basename = recordingFile and (recordingFile:match("([^/]+)$") or "") or ""
 
-  if not apiKey then
-    cloudLog("transcribe_failed", {
-      file_basename = recordingFile and (recordingFile:match("([^/]+)$") or "") or "",
-      reason = "no_api_key",
-    }, "ERROR")
-    callback(nil, "Gemini API Key 未設定")
+  if not gcloudPath then
+    cloudLog("transcribe_failed", { file_basename = basename, reason = "gcloud_missing" }, "ERROR")
+    guideGcloudInstall()
+    callback(nil, "gcloud 未安裝")
     return
   end
 
+  if not adcCredentialsExist() then
+    cloudLog("transcribe_failed", { file_basename = basename, reason = "adc_not_logged_in" }, "ERROR")
+    guideAdcLogin("尚未登入 Google Cloud ADC")
+    callback(nil, "ADC 未登入")
+    return
+  end
+
+  local project = getVertexProject()
+  local location = getVertexLocation()
   local jqPath = getJqPath()
+  local ffmpegPath = getFFmpegPath()
   local _attrs = hs.fs.attributes(recordingFile)
   local _fileSize = _attrs and _attrs.size or 0
   local _txStartEpoch = hs.timer.secondsSinceEpoch()
   cloudLog("transcribe_request_start", {
-    file_basename = recordingFile:match("([^/]+)$") or "",
+    file_basename = basename,
     file_size = _fileSize,
     model = config.geminiModel,
+    auth = "adc",
+    vertex_project = project,
+    vertex_location = location,
   })
 
-  -- Gemini 需要先上傳檔案，再呼叫 generateContent
-  -- 使用 shell script 一次完成整個流程
-  local geminiCmd = string.format([[
-    set -e
-    GEMINI_API_KEY="%s"
-    AUDIO_PATH="%s"
-    MIME_TYPE="audio/mp4"
-    NUM_BYTES=$(wc -c < "${AUDIO_PATH}" | tr -d ' ')
+  local vertexCmd = string.format([[
+    set -uo pipefail
+    GCLOUD=%s
+    FFMPEG=%s
+    JQ=%s
+    AUDIO=%s
+    PROJECT=%s
+    LOCATION=%s
+    MODEL=%s
+    HOST=%s
+    MAXB=%d
 
-    # Step 1: 初始化上傳
-    curl -s "%s?key=${GEMINI_API_KEY}" \
-      -D /tmp/gemini-upload-header.tmp \
-      -H "X-Goog-Upload-Protocol: resumable" \
-      -H "X-Goog-Upload-Command: start" \
-      -H "X-Goog-Upload-Header-Content-Length: ${NUM_BYTES}" \
-      -H "X-Goog-Upload-Header-Content-Type: ${MIME_TYPE}" \
+    TOKEN=$("$GCLOUD" auth application-default print-access-token 2>/tmp/botrun-adc-err.txt)
+    if [ -z "$TOKEN" ]; then
+      cat /tmp/botrun-adc-err.txt >&2
+      exit 90
+    fi
+
+    TMPDIR_BRH=$(mktemp -d -t botrun-vertex)
+    trap 'rm -rf "$TMPDIR_BRH"' EXIT
+    OPUS="$TMPDIR_BRH/audio.opus"
+
+    # 壓成 16k 單聲道 opus 24kbps（約 3KB/s，大幅降低 inline 體積）
+    "$FFMPEG" -y -loglevel error -i "$AUDIO" -vn -ac 1 -ar 16000 -c:a libopus -b:a 24k "$OPUS" || exit 93
+
+    SZ=$(wc -c < "$OPUS" | tr -d ' ')
+    if [ "$SZ" -gt "$MAXB" ]; then
+      echo "audio too large: ${SZ} bytes" >&2
+      exit 91
+    fi
+
+    base64 -i "$OPUS" | tr -d '\n' > "$TMPDIR_BRH/b64.txt"
+
+    "$JQ" -n --rawfile d "$TMPDIR_BRH/b64.txt" \
+      '{contents:[{role:"user",parts:[
+         {inlineData:{mimeType:"audio/ogg",data:$d}},
+         {text:"請將這段音訊轉錄成繁體中文（臺灣用語）文字，只輸出轉錄的文字內容，不要加任何說明"}
+       ]}],
+       generationConfig:{maxOutputTokens:65536,thinkingConfig:{thinkingLevel:"low"}}}' \
+      > "$TMPDIR_BRH/req.json"
+
+    # ⚠️ 絕對不要加 x-goog-user-project header：會被擋成 HTML 404，極難查
+    CODE=$(curl -s -o "$TMPDIR_BRH/resp.json" -w '%%{http_code}' \
+      -X POST "$HOST/v1/projects/$PROJECT/locations/$LOCATION/publishers/google/models/$MODEL:generateContent" \
+      -H "Authorization: Bearer $TOKEN" \
       -H "Content-Type: application/json" \
-      -d '{"file": {"display_name": "voice-recording"}}' > /dev/null
+      -d @"$TMPDIR_BRH/req.json")
 
-    upload_url=$(grep -i "x-goog-upload-url: " /tmp/gemini-upload-header.tmp | cut -d" " -f2 | tr -d "\r")
-
-    if [ -z "$upload_url" ]; then
-      echo '{"error": "無法取得上傳 URL"}'
-      exit 1
+    if [ "$CODE" = "200" ]; then
+      cat "$TMPDIR_BRH/resp.json"
+      exit 0
     fi
 
-    # Step 2: 上傳檔案
-    curl -s "${upload_url}" \
-      -H "Content-Length: ${NUM_BYTES}" \
-      -H "X-Goog-Upload-Offset: 0" \
-      -H "X-Goog-Upload-Command: upload, finalize" \
-      --data-binary "@${AUDIO_PATH}" > /tmp/gemini-file-info.json
-
-    file_uri=$(%s -r ".file.uri" /tmp/gemini-file-info.json)
-
-    if [ -z "$file_uri" ] || [ "$file_uri" = "null" ]; then
-      echo '{"error": "檔案上傳失敗"}'
-      exit 1
-    fi
-
-    # Step 3: 呼叫 generateContent 進行轉錄
-    curl -s "%s/models/%s:generateContent?key=${GEMINI_API_KEY}" \
-      -H 'Content-Type: application/json' \
-      -X POST \
-      -d '{
-        "contents": [{
-          "parts":[
-            {"text": "請將這段音訊轉錄成繁體中文文字，只輸出轉錄的文字內容，不要加任何說明"},
-            {"file_data":{"mime_type": "audio/mp4", "file_uri": "'"${file_uri}"'"}}
-          ]
-        }],
-        "generationConfig": {
-          "maxOutputTokens": 65536,
-          "thinkingConfig": {
-            "thinkingLevel": "MINIMAL"
-          }
-        }
-      }'
-  ]], apiKey, recordingFile, config.geminiUploadUrl, jqPath, config.geminiApiUrl, config.geminiModel)
+    tail -c 800 "$TMPDIR_BRH/resp.json" >&2
+    case "$CODE" in
+      401) exit 90 ;;
+      403) exit 92 ;;
+      *)   exit 94 ;;
+    esac
+  ]],
+    shellQuote(gcloudPath), shellQuote(ffmpegPath), shellQuote(jqPath),
+    shellQuote(recordingFile), shellQuote(project), shellQuote(location),
+    shellQuote(config.geminiModel), shellQuote(config.vertex.host),
+    config.vertex.maxUploadBytes)
 
   local task = hs.task.new("/bin/bash", function(exitCode, stdout, stderr)
     local _latency = hs.timer.secondsSinceEpoch() - _txStartEpoch
     local _stdoutLen = stdout and #stdout or 0
     local _stderrLen = stderr and #stderr or 0
-    if exitCode ~= 0 then
+
+    -- 認證/權限類錯誤：不重試，直接引導使用者處理
+    if exitCode == 90 or exitCode == 92 then
+      local reason = (exitCode == 90) and "adc_token_failed" or "vertex_permission_denied"
       cloudLog("transcribe_failed", {
-        file_basename = recordingFile:match("([^/]+)$") or "",
-        file_size = _fileSize,
-        reason = "shell_nonzero_exit",
-        exit_code = exitCode,
-        latency_s = _latency,
+        file_basename = basename, file_size = _fileSize, reason = reason,
+        latency_s = _latency, vertex_project = project,
+        stderr_tail = (stderr or ""):sub(-800),
+      }, "ERROR")
+      if exitCode == 90 then
+        guideAdcLogin("Google Cloud 憑證已過期或無效")
+      else
+        guideVertexPermission(project)
+      end
+      callback(nil, (exitCode == 90) and "ADC 憑證失效" or "Vertex 權限不足")
+      return
+    end
+
+    if exitCode ~= 0 then
+      local reasonMap = {
+        [91] = "audio_too_large",
+        [93] = "ffmpeg_convert_failed",
+        [94] = "vertex_http_error",
+      }
+      cloudLog("transcribe_failed", {
+        file_basename = basename, file_size = _fileSize,
+        reason = reasonMap[exitCode] or "shell_nonzero_exit",
+        exit_code = exitCode, latency_s = _latency,
         stderr_tail = (stderr or ""):sub(-800),
         stdout_tail = (stdout or ""):sub(-400),
       }, "ERROR")
-      callback(nil, "Gemini 連線失敗: " .. (stderr or ""))
+      if exitCode == 91 then
+        hs.alert.show("⚠️ 錄音太長，超過雲端單次上限\n請改用 F6 選單的本機引擎轉錄", 5)
+        callback(nil, "錄音過長，雲端單次無法處理")
+      else
+        callback(nil, "Vertex AI 連線失敗: " .. (stderr or ""))
+      end
       return
     end
 
     cloudLog("transcribe_request_done", {
-      file_basename = recordingFile:match("([^/]+)$") or "",
+      file_basename = basename,
       latency_s = _latency,
       stdout_bytes = _stdoutLen,
       stderr_bytes = _stderrLen,
     })
 
-    -- 解析 Gemini 回應
+    -- 解析回應
     local parseTask = hs.task.new("/bin/bash", function(_, jsonOut, _)
       local text = jsonOut:gsub("^%s*(.-)%s*$", "%1")  -- trim
 
       if text and text ~= "" and text ~= "null" then
         cloudLog("transcribe_success", {
-          file_basename = recordingFile:match("([^/]+)$") or "",
+          file_basename = basename,
           file_size = _fileSize,
           latency_s = _latency,
           text_length = #text,
@@ -1034,20 +1167,19 @@ local function transcribeWithGemini(recordingFile, callback)
         })
         callback(text, nil)
       else
-        -- 解析失敗：dump stdout 末段以利除錯（可能含 API error 訊息）
         cloudLog("transcribe_failed", {
-          file_basename = recordingFile:match("([^/]+)$") or "",
+          file_basename = basename,
           file_size = _fileSize,
           reason = "empty_or_null_text",
           latency_s = _latency,
           api_response_tail = (stdout or ""):sub(-1200),
         }, "ERROR")
-        callback(nil, "Gemini 無法解析回應: " .. stdout)
+        callback(nil, "Vertex AI 無法解析回應: " .. stdout)
       end
     end, {"-c", "echo '" .. stdout:gsub("'", "'\\''") .. "' | " .. jqPath .. " -r '.candidates[0].content.parts[0].text // empty'"})
     parseTask:start()
 
-  end, {"-c", geminiCmd})
+  end, {"-c", vertexCmd})
   state.transcribeTask = task
   task:start()
 end
@@ -1815,6 +1947,16 @@ _G.botrunHammerIsBusy = function() return state.isRecording or state.isTranscrib
 _G.botrunHammerCurrentFile = function() return state.currentRecordingFile end
 _G.botrunHammerTranscribeFile = function() return state.transcribeFile end
 _G.botrunHammerHistoryFile = function() return config.historyFile end
+-- v1.10.0：雲端（Vertex AI + ADC）轉錄除錯入口，供 `hs -c` 做 E2E 驗證
+_G.botrunHammerTranscribeCloud = function(path, cb) transcribeWithGemini(path, cb) end
+_G.botrunHammerAdcStatus = function()
+  return {
+    gcloud = getGcloudPath() or "NOT_FOUND",
+    adc = adcCredentialsExist(),
+    project = getVertexProject(),
+    location = getVertexLocation(),
+  }
+end
 
 -- v1.7.15: F6 統一選單（合併原 F6 文字歷史 + F7 檔案歷史 + F8 引擎切換）
 -- 舊的 F7 / F8 hotkey 不再綁定，使用者只需記憶 F6
@@ -2240,8 +2382,11 @@ local function checkDependencies()
   local issues = {}
   local warnings = {}
 
-  if not getGeminiApiKey() then
-    table.insert(issues, "GEMINI_API_KEY 未設定，請編輯 ~/.botrun-hammer/.env")
+  -- v1.10.0：雲端轉錄改用 gcloud ADC（不再有 API key）
+  if not getGcloudPath() then
+    table.insert(issues, "gcloud 未安裝（brew install --cask gcloud-cli）")
+  elseif not adcCredentialsExist() then
+    table.insert(issues, "尚未登入 Google Cloud：gcloud auth application-default login")
   end
 
   local ffmpegPath = getFFmpegPath()
