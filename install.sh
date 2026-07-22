@@ -321,17 +321,26 @@ if [[ -n "${GCLOUD_BIN:-}" ]]; then
         if [[ "$VTEST_CODE" == "200" ]]; then
             echo -e "${GREEN}✅ Vertex AI 連線正常，語音轉文字可以直接使用${NC}"
         elif [[ "$VTEST_CODE" == "403" ]]; then
-            echo -e "${RED}❌ 你的 Google 帳號還沒有 $VP 專案的使用權限${NC}"
+            if [[ "$MY_ACCOUNT" == *"@cameo.tw" ]]; then
+                echo -e "${RED}❌ 帳號 $MY_ACCOUNT 目前無法使用 $VP${NC}"
+                echo ""
+                echo -e "   @cameo.tw 網域理論上已全網域授權，請把這行貼給波特槌管理者："
+                echo ""
+                printf "   %b波特槌 403：%s / 專案 %s%b\n" "$BOLD" "$MY_ACCOUNT" "$VP" "$NC"
+            else
+                echo -e "${RED}❌ 你目前登入的是個人帳號：$MY_ACCOUNT${NC}"
+                echo ""
+                echo -e "   波特槌已對 ${BOLD}@cameo.tw${NC} 全網域開放，請改用公司帳號重新登入："
+                echo ""
+                printf "   %bgcloud auth application-default login%b\n" "$BOLD" "$NC"
+                echo ""
+                echo -e "   （瀏覽器出現選帳號畫面時，選你的 ${BOLD}@cameo.tw${NC} 帳號）"
+                echo ""
+                echo -e "   若你不是 @cameo.tw 成員，請把這行貼給管理者請他開通："
+                printf "   %b請幫我開通波特槌語音轉文字：%s%b\n" "$BOLD" "$MY_ACCOUNT" "$NC"
+            fi
             echo ""
-            echo -e "   請把下面這行貼給波特槌管理者，請他幫你開通："
-            echo ""
-            printf "   %b請幫我開通波特槌：%s%b\n" "$BOLD" "$MY_ACCOUNT" "$NC"
-            echo ""
-            echo -e "   （管理者端執行：）"
-            printf "   %bgcloud projects add-iam-policy-binding %s \\%b\n" "$BOLD" "$VP" "$NC"
-            printf "   %b  --member=\"user:%s\" --role=\"roles/aiplatform.user\"%b\n" "$BOLD" "$MY_ACCOUNT" "$NC"
-            echo ""
-            echo -e "   開通後不用重裝，直接按 F5 就會通。"
+            echo -e "   處理後不用重裝，直接按 F5 就會通。"
         else
             echo -e "${YELLOW}⚠️ Vertex AI 連線測試回應 HTTP $VTEST_CODE${NC}"
             echo -e "   詳情：/tmp/botrun-hammer-vertex-test.json"

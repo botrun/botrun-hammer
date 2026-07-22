@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.10.1 - Mac 語音轉文字
+  🔨 波特槌 v1.10.2 - Mac 語音轉文字
 
   由 Vertex AI Gemini（gcloud ADC 認證）驅動的語音輸入助手
 
@@ -24,7 +24,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.10.1"
+local VERSION = "1.10.2"
 
 -- 開機自動啟動 Hammerspoon（v1.7.11）
 pcall(function() hs.autoLaunch(true) end)
@@ -253,14 +253,28 @@ local function guideVertexPermission(project)
   end
   if account == "" then account = "（你的 Google 帳號）" end
 
-  hs.pasteboard.setContents("請幫我開通波特槌語音轉文字：" .. account)
-  hs.alert.show(
-    "🚫 你的帳號還沒有「" .. tostring(project) .. "」專案的使用權限" ..
-    "\n\n帳號：" .. account ..
-    "\n已把開通請求複製到剪貼簿，貼給波特槌管理者即可" ..
-    "\n（管理者授予 roles/aiplatform.user 後，直接按 F5 就會通）",
-    10
-  )
+  local isCameo = account:match("@cameo%.tw$") ~= nil
+  if isCameo then
+    hs.pasteboard.setContents("波特槌 403：" .. account .. " / 專案 " .. tostring(project))
+    hs.alert.show(
+      "🚫 帳號 " .. account .. " 目前無法使用「" .. tostring(project) .. "」" ..
+      "\n\n@cameo.tw 應已全網域授權，請把剪貼簿內容貼給管理者",
+      10
+    )
+  else
+    hs.pasteboard.setContents("gcloud auth application-default login")
+    hs.alert.show(
+      "🚫 你登入的是個人帳號：" .. account ..
+      "\n\n波特槌已對 @cameo.tw 全網域開放" ..
+      "\n請用公司帳號重新登入（指令已複製到剪貼簿）：" ..
+      "\ngcloud auth application-default login" ..
+      "\n\n選帳號時請選你的 @cameo.tw 帳號，之後按 F5 即可",
+      12
+    )
+    hs.timer.doAfter(1, function()
+      hs.execute("open -a Terminal \"" .. os.getenv("HOME") .. "\"")
+    end)
+  end
 end
 
 -- ========================================

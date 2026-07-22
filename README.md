@@ -14,7 +14,7 @@
 |------|------|----------|
 | **macOS 10.15+** | 唯一支援的作業系統 | 你的 Mac |
 | **gcloud CLI + ADC 登入** | 雲端轉錄認證（v1.10.0 起不用 API Key） | `brew install --cask gcloud-cli` 後 `gcloud auth application-default login` |
-| **有 Vertex AI 權限的 GCP 專案** | 呼叫 gemini-3.5-flash | 專屬專案 [`botrun-hammer`](https://console.cloud.google.com/welcome?project=botrun-hammer)（預設值）；需 `roles/aiplatform.user` |
+| **有 Vertex AI 權限的 GCP 專案** | 呼叫 gemini-3.5-flash | 專屬專案 [`botrun-hammer`](https://console.cloud.google.com/welcome?project=botrun-hammer)（預設值）；**@cameo.tw 全網域已授權**，外部帳號需管理者加 `roles/aiplatform.user` |
 
 > 其他依賴（Homebrew、Hammerspoon、ffmpeg、jq、opencc）安裝腳本會**自動處理**
 
@@ -148,18 +148,24 @@ VERTEX_PROJECT=botrun-hammer   # 預設；改成你自己的專案 ID 才需要�
 VERTEX_LOCATION=global         # 只有 global / us / asia-southeast1 有 gemini-3.5-flash
 ```
 
-### 夥伴第一次使用（管理者需開通一次）
+### 夥伴第一次使用
 
-波特槌用**你自己的 Google 帳號**跑 ADC，但呼叫的是共用專案 `botrun-hammer`，所以管理者要幫你的帳號開通一次：
+**@cameo.tw 同仁：不需要任何人開通。** `botrun-hammer` 專案已對整個 `cameo.tw` 網域授予 `roles/aiplatform.user`，你只要：
 
-1. 你執行安裝腳本，它會自動實測一次連線
-2. 若顯示 403，腳本會把這句複製到你的剪貼簿：`請幫我開通波特槌語音轉文字：你的帳號@gmail.com`
-3. 貼給管理者，管理者執行：
-   ```bash
-   gcloud projects add-iam-policy-binding botrun-hammer \
-     --member="user:夥伴帳號@gmail.com" --role="roles/aiplatform.user"
-   ```
-4. 開通後**不用重裝**，直接按 F5 就會通
+```bash
+gcloud auth application-default login   # 選帳號時選你的 @cameo.tw 帳號
+```
+
+⚠️ **最常見的卡關**：ADC 登入時選到個人 Gmail → 403。安裝腳本與 F5 都會偵測到並提示你改用公司帳號重登。
+
+**非 @cameo.tw 的外部夥伴**：安裝腳本會把「請幫我開通波特槌語音轉文字：你的帳號」複製到剪貼簿，貼給管理者即可：
+
+```bash
+gcloud projects add-iam-policy-binding botrun-hammer \
+  --member="user:夥伴帳號@example.com" --role="roles/aiplatform.user"
+```
+
+兩種情況都**不用重裝**，處理完直接按 F5 就會通。
 
 ### 更新
 
@@ -174,7 +180,8 @@ curl -fsSL https://raw.githubusercontent.com/botrun/botrun-hammer/main/install.s
 | 畫面提示 | 原因 | 處理 |
 |---|---|---|
 | 🔑 尚未登入 Google Cloud ADC | 沒登入或憑證過期 | 指令已自動複製到剪貼簿，貼上執行即可 |
-| 🚫 你的帳號還沒有專案使用權限 | 帳號未被加進 `botrun-hammer` | 剪貼簿已備好開通請求，貼給管理者即可 |
+| 🚫 你登入的是個人帳號 | ADC 登入時選到個人 Gmail | 改用 @cameo.tw 帳號重跑 `gcloud auth application-default login` |
+| 🚫 帳號無法使用該專案 | 非 cameo.tw 且未開通 | 剪貼簿已備好開通請求，貼給管理者 |
 | ⚠️ 錄音太長超過雲端單次上限 | 單次 inline 上限約 15MB | 改用 F6 選單的本機引擎 |
 
 ### 設定 NCHC API Key（備援）
