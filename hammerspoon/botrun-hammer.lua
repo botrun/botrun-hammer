@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.10.2 - Mac 語音轉文字
+  🔨 波特槌 v1.10.3 - Mac 語音轉文字
 
   由 Vertex AI Gemini（gcloud ADC 認證）驅動的語音輸入助手
 
@@ -24,7 +24,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.10.2"
+local VERSION = "1.10.3"
 
 -- 開機自動啟動 Hammerspoon（v1.7.11）
 pcall(function() hs.autoLaunch(true) end)
@@ -47,7 +47,7 @@ local config = {
     host = "https://aiplatform.googleapis.com",
     -- ⚠️ location 只有 global / us / asia-southeast1 有這顆模型，其餘回 404
     location = "global",
-    -- 預設專案（可用 .env 的 VERTEX_PROJECT 覆寫）；需有 roles/aiplatform.user
+    -- 預設專案（可用 .env 的 VERTEX_PROJECT 覆寫）；需有 aiplatform.endpoints.predict 權限
     -- v1.10.1：全面改用專屬 GCP 專案 botrun-hammer
     -- https://console.cloud.google.com/welcome?project=botrun-hammer
     defaultProject = "botrun-hammer",

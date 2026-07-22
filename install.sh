@@ -288,7 +288,7 @@ else
     fi
 fi
 
-# 3) Vertex 專案（需有 roles/aiplatform.user）
+# 3) Vertex 專案（需有 aiplatform.endpoints.predict 權限）
 if ! grep -q "^VERTEX_PROJECT=" "$ENV_FILE" 2>/dev/null; then
     echo "VERTEX_PROJECT=botrun-hammer" >> "$ENV_FILE"
 fi
@@ -453,7 +453,8 @@ else
     echo -e "   ${BOLD}gcloud auth application-default login${NC}"
     echo ""
     echo -e "   若還沒裝 gcloud：${BOLD}brew install --cask gcloud-cli${NC}"
-    echo -e "   若出現 403 權限不足：請管理者授予 ${BOLD}roles/aiplatform.user${NC}，"
+    echo -e "   若出現 403 權限不足：請管理者把你加入最小權限角色"
+    echo -e "   ${BOLD}projects/botrun-hammer/roles/botrunHammerPredict${NC}，"
     echo -e "   或改設定 ${BOLD}VERTEX_PROJECT${NC} 為你有權限的專案（$ENV_FILE）"
 fi
 echo ""
