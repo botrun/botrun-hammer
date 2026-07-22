@@ -2,6 +2,15 @@
 
 **Mac Voice-to-Text Tool** - Press fn+F5 to speak, text auto-types at cursor
 
+## 一鍵安裝 / Install（複製這行貼到終端機）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/botrun/botrun-hammer/main/install.sh | bash
+```
+
+> macOS 專用・不需 GitHub 帳號或 token・Homebrew／Hammerspoon／ffmpeg 等依賴會自動安裝。
+> 需先有 `gcloud` ADC 登入（雲端轉錄用），詳見下方 Prerequisites；安裝腳本也會引導你登入。
+
 ## Quick Install
 
 > **不需要 GitHub 帳號或 token** — 本專案完全公開
