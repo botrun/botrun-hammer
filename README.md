@@ -13,8 +13,8 @@
 | 需求 | 說明 | 怎麼取得 |
 |------|------|----------|
 | **macOS 10.15+** | 唯一支援的作業系統 | 你的 Mac |
-| **Gemini API Key**（免費） | 主要語音轉文字引擎 | [Google AI Studio](https://aistudio.google.com/apikey)（Google 帳號即可） |
-| **NCHC API Key**（可選） | 備案引擎，Gemini 掛了自動切換 | [NCHC GenAI Portal](https://portal.genai.nchc.org.tw/) |
+| **gcloud CLI + ADC 登入** | 雲端轉錄認證（v1.10.0 起不用 API Key） | `brew install --cask gcloud-cli` 後 `gcloud auth application-default login` |
+| **有 Vertex AI 權限的 GCP 專案** | 呼叫 gemini-3.5-flash | 需 `roles/aiplatform.user`；預設 `botrun-chat`，可在 `.env` 用 `VERTEX_PROJECT` 更換 |
 
 > 其他依賴（Homebrew、Hammerspoon、ffmpeg、jq、opencc）安裝腳本會**自動處理**
 
@@ -24,19 +24,16 @@
 curl -fsSL https://raw.githubusercontent.com/botrun/botrun-hammer/main/install.sh | bash
 ```
 
-安裝過程會互動詢問 API Key，照提示輸入即可。
+安裝過程會檢查 gcloud 與 ADC 登入狀態，未登入會引導你直接完成登入。
 
-### 方法二：帶 API Key 靜默安裝
-
-```bash
-GEMINI_API_KEY=你的key curl -fsSL https://raw.githubusercontent.com/botrun/botrun-hammer/main/install.sh | bash
-```
-
-適合批次部署或 CI/CD，不會互動詢問。NCHC key 可選加：
+### 方法二：先登入再安裝（批次部署）
 
 ```bash
-GEMINI_API_KEY=xxx NCHC_GENAI_API_KEY=yyy curl -fsSL https://raw.githubusercontent.com/botrun/botrun-hammer/main/install.sh | bash
+gcloud auth application-default login
+curl -fsSL https://raw.githubusercontent.com/botrun/botrun-hammer/main/install.sh | bash
 ```
+
+伺服器／CI 環境可改用 service account：`gcloud auth application-default login --impersonate-service-account=...`，同樣不需要任何 API Key。
 
 ### 方法三：clone 安裝
 
@@ -125,24 +122,37 @@ cd botrun-hammer
 
 ---
 
-## API Key 設定
+## 認證設定（Google Cloud ADC）
 
-本工具使用 **Gemini API** 作為主要轉錄引擎，國網中心 NCHC 作為備援。
+v1.10.0 起**永久移除 API Key**，雲端轉錄一律走 gcloud ADC（Application Default Credentials）——憑證會自動換發、可即時撤銷，不會有 key 外流被盜刷的風險。
 
-### 設定 Gemini API Key（主要）
+### 登入
 
-1. 前往 [Google AI Studio](https://aistudio.google.com/apikey) 取得 API Key
-2. 編輯設定檔：
+```bash
+brew install --cask gcloud-cli          # 尚未安裝 gcloud 才需要
+gcloud auth application-default login   # 瀏覽器授權，一次即可
+```
+
+### 選擇 Vertex 專案
+
+預設 `botrun-chat`。要換成自己的專案（需有 `roles/aiplatform.user`）：
 
 ```bash
 nano ~/.botrun-hammer/.env
 ```
 
-填入：
+```
+VERTEX_PROJECT=你的專案ID
+VERTEX_LOCATION=global      # 只有 global / us / asia-southeast1 有 gemini-3.5-flash
+```
 
-```
-GEMINI_API_KEY=你的Gemini_API_Key
-```
+### 常見錯誤
+
+| 畫面提示 | 原因 | 處理 |
+|---|---|---|
+| 🔑 尚未登入 Google Cloud ADC | 沒登入或憑證過期 | 指令已自動複製到剪貼簿，貼上執行即可 |
+| 🚫 專案沒有 Vertex AI 權限 | 該 GCP 專案缺 `roles/aiplatform.user` | 找管理者授權，或改 `VERTEX_PROJECT` |
+| ⚠️ 錄音太長超過雲端單次上限 | 單次 inline 上限約 15MB | 改用 F6 選單的本機引擎 |
 
 ### 設定 NCHC API Key（備援）
 
@@ -231,10 +241,14 @@ curl -fsSL https://raw.githubusercontent.com/botrun/botrun-hammer/main/install.s
 
 ### Setup
 
-1. Get a Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey)
-2. Add it to `~/.botrun-hammer/.env`:
+1. Install gcloud and sign in with ADC (no API key needed since v1.10.0):
+   ```bash
+   brew install --cask gcloud-cli
+   gcloud auth application-default login
    ```
-   GEMINI_API_KEY=your_key_here
+2. Optional — point at your own GCP project (needs `roles/aiplatform.user`) in `~/.botrun-hammer/.env`:
+   ```
+   VERTEX_PROJECT=your-project-id
    ```
 3. Grant Hammerspoon **Accessibility** and **Microphone** permissions in System Settings
 
@@ -256,6 +270,6 @@ MIT License
 
 ## 致謝
 
-- [Google Gemini](https://aistudio.google.com/) - 主要語音轉錄 API
+- [Google Vertex AI Gemini](https://cloud.google.com/vertex-ai) - 主要語音轉錄 API（ADC 認證）
 - [NCHC GenAI](https://portal.genai.nchc.org.tw/) - 備援 Whisper API
 - [Hammerspoon](https://www.hammerspoon.org/) - macOS 自動化框架

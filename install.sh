@@ -213,13 +213,14 @@ EOF
 fi
 
 # ========================================
-# 設定 API Key
+# 設定 Google Cloud ADC 認證（v1.10.0：永久移除 GEMINI_API_KEY）
+# 公司已停用 Gemini API key（曾遭盜用），雲端轉錄一律走 ADC
 # ========================================
 
 ENV_FILE="$BOTRUN_DIR/.env"
 
 echo ""
-echo -e "${BOLD}🔑 設定 Gemini API Key${NC}"
+echo -e "${BOLD}🔑 設定 Google Cloud 認證（ADC）${NC}"
 echo ""
 
 # 初始化 .env 檔案（如果不存在）
@@ -228,43 +229,66 @@ if [[ ! -f "$ENV_FILE" ]]; then
     chmod 600 "$ENV_FILE"
 fi
 
-if grep -q "GEMINI_API_KEY" "$ENV_FILE" 2>/dev/null && ! grep -q "GEMINI_API_KEY=你的" "$ENV_FILE" 2>/dev/null; then
-    echo -e "${GREEN}✅ Gemini API Key 已設定${NC}"
-elif [[ -n "$GEMINI_API_KEY" ]]; then
-    # 從環境變數讀取
-    if grep -q "GEMINI_API_KEY" "$ENV_FILE" 2>/dev/null; then
-        sed -i '' "s|^GEMINI_API_KEY=.*|GEMINI_API_KEY=$GEMINI_API_KEY|" "$ENV_FILE"
-    else
-        echo "GEMINI_API_KEY=$GEMINI_API_KEY" >> "$ENV_FILE"
-    fi
-    echo -e "${GREEN}✅ Gemini API Key 已從環境變數設定${NC}"
-elif [[ -t 0 ]]; then
-    echo ""
-    echo "請輸入你的 Gemini API Key / Enter your Gemini API Key"
-    echo -e "${CYAN}（免費申請 / Get free key: https://aistudio.google.com/apikey）${NC}"
-    echo ""
-    read -p "Gemini API Key: " GEMINI_KEY_INPUT < /dev/tty
+# 升級路徑：把舊版留下的 API key 清乾淨（不再使用，留著只是外洩風險）
+if grep -q "^GEMINI_API_KEY" "$ENV_FILE" 2>/dev/null; then
+    sed -i '' '/^GEMINI_API_KEY/d' "$ENV_FILE"
+    echo -e "${YELLOW}🧹 已移除 .env 內舊版 GEMINI_API_KEY（v1.10.0 起改用 ADC）${NC}"
+    echo -e "${YELLOW}   若該 key 曾外流，建議到 Google Cloud Console 撤銷它${NC}"
+fi
 
-    if [[ -n "$GEMINI_KEY_INPUT" ]]; then
-        if grep -q "GEMINI_API_KEY" "$ENV_FILE" 2>/dev/null; then
-            sed -i '' "s|^GEMINI_API_KEY=.*|GEMINI_API_KEY=$GEMINI_KEY_INPUT|" "$ENV_FILE"
-        else
-            echo "GEMINI_API_KEY=$GEMINI_KEY_INPUT" >> "$ENV_FILE"
-        fi
-        echo -e "${GREEN}✅ Gemini API Key 已儲存${NC}"
-    else
-        echo -e "${YELLOW}⚠️ 未設定 Gemini API Key，稍後請手動編輯：${NC}"
-        echo -e "${YELLOW}   vi $ENV_FILE${NC}"
-        if ! grep -q "GEMINI_API_KEY" "$ENV_FILE" 2>/dev/null; then
-            echo "GEMINI_API_KEY=你的Gemini_API_Key" >> "$ENV_FILE"
-        fi
-    fi
+# 1) gcloud 是否安裝
+GCLOUD_BIN=""
+for p in /opt/homebrew/bin/gcloud /usr/local/bin/gcloud /usr/bin/gcloud "$HOME/google-cloud-sdk/bin/gcloud"; do
+    [[ -x "$p" ]] && GCLOUD_BIN="$p" && break
+done
+
+if [[ -z "$GCLOUD_BIN" ]]; then
+    echo -e "${RED}❌ 找不到 gcloud（Google Cloud SDK）${NC}"
+    echo ""
+    echo -e "   請執行安裝："
+    echo -e "   ${BOLD}brew install --cask gcloud-cli${NC}"
+    echo ""
+    echo -e "   安裝後再執行："
+    echo -e "   ${BOLD}gcloud auth application-default login${NC}"
+    echo ""
 else
-    echo -e "${YELLOW}⚠️ 非互動模式，跳過 API Key 設定${NC}"
-    if ! grep -q "GEMINI_API_KEY" "$ENV_FILE" 2>/dev/null; then
-        echo "GEMINI_API_KEY=你的Gemini_API_Key" >> "$ENV_FILE"
+    printf "%b✅ gcloud 已安裝: %s%b\n" "$GREEN" "$GCLOUD_BIN" "$NC"
+
+    # 2) ADC 是否已登入（實際取一次 token 才算數）
+    if "$GCLOUD_BIN" auth application-default print-access-token >/dev/null 2>&1; then
+        echo -e "${GREEN}✅ Google Cloud ADC 已登入${NC}"
+    else
+        echo -e "${YELLOW}⚠️ 尚未登入 Google Cloud ADC，語音轉文字無法使用${NC}"
+        echo ""
+        if [[ -t 0 ]]; then
+            echo -e "   現在登入？瀏覽器會開啟 Google 授權頁面"
+            read -p "   按 Enter 開始登入，或輸入 s 跳過： " ADC_CHOICE < /dev/tty
+            if [[ "$ADC_CHOICE" != "s" && "$ADC_CHOICE" != "S" ]]; then
+                "$GCLOUD_BIN" auth application-default login < /dev/tty || true
+                if "$GCLOUD_BIN" auth application-default print-access-token >/dev/null 2>&1; then
+                    echo -e "${GREEN}✅ ADC 登入成功${NC}"
+                else
+                    echo -e "${RED}❌ ADC 仍未登入，之後請手動執行：${NC}"
+                    echo -e "   ${BOLD}gcloud auth application-default login${NC}"
+                fi
+            else
+                echo -e "${YELLOW}   已跳過。之後請手動執行：${NC}"
+                echo -e "   ${BOLD}gcloud auth application-default login${NC}"
+            fi
+        else
+            echo -e "   ${BOLD}gcloud auth application-default login${NC}"
+        fi
     fi
 fi
+
+# 3) Vertex 專案（需有 roles/aiplatform.user）
+if ! grep -q "^VERTEX_PROJECT=" "$ENV_FILE" 2>/dev/null; then
+    echo "VERTEX_PROJECT=botrun-chat" >> "$ENV_FILE"
+fi
+if ! grep -q "^VERTEX_LOCATION=" "$ENV_FILE" 2>/dev/null; then
+    echo "VERTEX_LOCATION=global" >> "$ENV_FILE"
+fi
+printf "%b   Vertex 專案: %s (可編輯 %s 更換)%b\n" "$CYAN" "$(grep '^VERTEX_PROJECT=' "$ENV_FILE" | cut -d= -f2)" "$ENV_FILE" "$NC"
 
 # 移除舊版 NCHC key（如果存在）
 if grep -q "NCHC_GENAI_API_KEY" "$ENV_FILE" 2>/dev/null; then
@@ -354,19 +378,22 @@ echo -e "${YELLOW}💡 提示：${NC}"
 echo "   • 開機會自動啟動 Hammerspoon（選單列 🔨 圖示）"
 echo "   • 首次使用需授權 Accessibility 權限"
 echo ""
-echo -e "${BOLD}📋 API Key 狀態：${NC}"
+echo -e "${BOLD}📋 認證狀態（Google Cloud ADC）：${NC}"
 echo ""
-if grep -q "GEMINI_API_KEY" "$ENV_FILE" 2>/dev/null && ! grep -q "GEMINI_API_KEY=你的" "$ENV_FILE" 2>/dev/null; then
-    MASKED_KEY=$(grep "^GEMINI_API_KEY=" "$ENV_FILE" | sed 's/.*=\(.\{4\}\).*/\1****/')
-    echo -e "   ${GREEN}✅ GEMINI_API_KEY 已設定（${MASKED_KEY}）${NC}"
+if [[ -n "${GCLOUD_BIN:-}" ]] && "$GCLOUD_BIN" auth application-default print-access-token >/dev/null 2>&1; then
+    ADC_ACCOUNT=$("$GCLOUD_BIN" config get-value account 2>/dev/null)
+    printf "   %b✅ ADC 已登入: %s%b\n" "$GREEN" "$ADC_ACCOUNT" "$NC"
+    echo -e "   Vertex 專案：${CYAN}$(grep '^VERTEX_PROJECT=' "$ENV_FILE" | cut -d= -f2)${NC}"
     echo -e "   設定檔：${CYAN}$ENV_FILE${NC}"
 else
-    echo -e "   ${RED}❌ GEMINI_API_KEY 尚未設定，語音轉文字無法使用！${NC}"
+    echo -e "   ${RED}❌ 尚未登入 Google Cloud，語音轉文字無法使用！${NC}"
     echo ""
-    echo -e "   請執行以下指令設定："
+    echo -e "   請執行以下指令："
     echo ""
-    echo -e "   ${BOLD}echo 'GEMINI_API_KEY=你的Key' > $ENV_FILE${NC}"
+    echo -e "   ${BOLD}gcloud auth application-default login${NC}"
     echo ""
-    echo -e "   免費申請：${CYAN}https://aistudio.google.com/apikey${NC}"
+    echo -e "   若還沒裝 gcloud：${BOLD}brew install --cask gcloud-cli${NC}"
+    echo -e "   若出現 403 權限不足：請管理者授予 ${BOLD}roles/aiplatform.user${NC}，"
+    echo -e "   或改設定 ${BOLD}VERTEX_PROJECT${NC} 為你有權限的專案（$ENV_FILE）"
 fi
 echo ""
