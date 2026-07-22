@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.10.3 - Mac 語音轉文字
+  🔨 波特槌 v1.11.0 - Mac 語音轉文字
 
   由 Vertex AI Gemini（gcloud ADC 認證）驅動的語音輸入助手
 
@@ -24,7 +24,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.10.3"
+local VERSION = "1.11.0"
 
 -- 開機自動啟動 Hammerspoon（v1.7.11）
 pcall(function() hs.autoLaunch(true) end)
@@ -103,6 +103,8 @@ local config = {
       { key = "large-v3",        label = "💻 本機 large-v3 (繁中・精準)" },
       { key = "large-v3-turbo",  label = "💻 本機 large-v3-turbo (繁中・快速)" },
       { key = "gemma-4-e4b",     label = "🧪 本機 Gemma-4-E4B (實驗・≤30s)" },
+      -- v1.11.0: Breeze-ASR 全精度（聯發創新基地）—— 台語/台灣華語專用，transformers 全精度
+      { key = "breeze-asr-26",   label = "💻 本機 Breeze-ASR-26 (台語・全精度)" },
     },
     -- 健康檢查 / 自動重啟參數
     healthCheckInterval = 60,    -- 秒，每 N 秒打 /health
@@ -1449,6 +1451,60 @@ local function autoInstallMlxVlm(onDone)
   end)
 end
 
+-- v1.11.0: Breeze-ASR 全精度需要 transformers + torch（~3GB），lazy install —
+-- 只在使用者選 breeze-* 時才裝（雲端/純 whisper 使用者不必吃這包）。
+local breezeInstalling = false
+
+local function isBreezeDepsInstalled(callback)
+  local venvPy = os.getenv("HOME") .. "/.botrun-hammer/venv/bin/python"
+  hs.task.new("/bin/bash", function(ec, _, _)
+    callback(ec == 0)
+  end, {"-c", venvPy .. " -c 'import torch, transformers' 2>/dev/null"}):start()
+end
+
+local function autoInstallBreeze(onDone)
+  if breezeInstalling then
+    if onDone then onDone(false) end
+    return
+  end
+  isBreezeDepsInstalled(function(installed)
+    if installed then
+      if onDone then onDone(true) end
+      return
+    end
+    breezeInstalling = true
+    lwmProgress:show()
+    lwmProgress:update(1, "Breeze-ASR 需要 transformers + torch，下載中（約 3GB）…")
+    local venvPip = os.getenv("HOME") .. "/.botrun-hammer/venv/bin/pip"
+    local installTask
+    installTask = hs.task.new("/bin/bash",
+      function(exitCode, stdout, stderr)
+        breezeInstalling = false
+        if exitCode == 0 then
+          lwmProgress:update(4, "✅ transformers 完成，準備載入 Breeze-ASR")
+          hs.timer.doAfter(2, function() lwmProgress:hide() end)
+          if onDone then onDone(true) end
+        else
+          local tail = (stderr or stdout or ""):sub(-150):gsub("\n", " ")
+          lwmProgress:fail("transformers 安裝失敗：" .. tail)
+          hs.timer.doAfter(8, function() lwmProgress:hide() end)
+          if onDone then onDone(false) end
+        end
+      end,
+      function(_task, stdoutChunk, stderrChunk)
+        local data = (stdoutChunk or "") .. (stderrChunk or "")
+        for line in data:gmatch("[^\r\n]+") do
+          local label = parsePipLine(line)
+          if label then lwmProgress:update(2, label) end
+        end
+        return true
+      end,
+      {"-c", venvPip .. " install --no-cache-dir transformers torch accelerate"}
+    )
+    installTask:start()
+  end)
+end
+
 -- v1.7.3: 升級路徑自我修復
 -- auto-update 只會拉這份 lua；daemon 腳本若缺（既有使用者升級到首次有 LWM 的版本），
 -- 從 GitHub raw 抓回來。沿用 auto-update 的 hs.http 非同步機制，不阻塞啟動。
@@ -2020,8 +2076,11 @@ local function setEngineLwm(modelKey)
   if engineMenubar then engineMenubar:setTitle(currentEngineSummary()) end
   -- v1.9.0: Gemma 4 audio 有 30 秒上限，必須在 UI 警告
   local isGemma = modelKey:sub(1, 6) == "gemma-"
+  local isBreeze = modelKey:sub(1, 7) == "breeze-"
   if isGemma then
     hs.alert.show("⚠️ Gemma 4 實驗模式：音檔需 ≤30 秒\n超過會回 422，建議只用於短句測試", 5)
+  elseif isBreeze then
+    hs.alert.show("💻 Breeze-ASR 全精度：台語/台灣華語專用\n首次會下載模型 + transformers（約 3GB）", 5)
   end
   -- v1.7.4: 切換到本機 = 自動補齊環境（scripts → pip → daemon），全部 UI 化
   ensureLwmScriptsDeployed(function(scriptsOk)
@@ -2044,6 +2103,14 @@ local function setEngineLwm(modelKey)
         autoInstallMlxVlm(function(vlmOk)
           if not vlmOk then
             hs.alert.show("⚠️ mlx-vlm 安裝失敗，無法使用 Gemma 4", 5)
+            return
+          end
+          afterEnsureDeps()
+        end)
+      elseif isBreeze then
+        autoInstallBreeze(function(depsOk)
+          if not depsOk then
+            hs.alert.show("⚠️ transformers/torch 安裝失敗，無法使用 Breeze-ASR", 5)
             return
           end
           afterEnsureDeps()
@@ -2089,6 +2156,8 @@ function lwmPreloadModel(modelKey)
       -- 特例：mlx-vlm 未裝（Gemma 路徑），引導使用者跑 pip
       if errMsg:match("mlx%-vlm") then
         hs.alert.show("⚠️ " .. modelKey .. " 需要 mlx-vlm，請先跑：\n~/.botrun-hammer/venv/bin/pip install mlx-vlm", 8)
+      elseif errMsg:match("transformers") then
+        hs.alert.show("⚠️ " .. modelKey .. " 需要 transformers/torch，請先跑：\n~/.botrun-hammer/venv/bin/pip install transformers torch accelerate", 8)
       else
         hs.alert.show("⚠️ 模型預載失敗：" .. errMsg:sub(1, 200), 5)
       end

@@ -49,7 +49,7 @@ PID_FILE = CONFIG_DIR / "lwm.pid"
 LOG_FILE = CONFIG_DIR / "lwm.log"
 
 DEFAULT_PORT_RANGE = range(18120, 18131)
-DAEMON_VERSION = "1.9.0"  # v1.9.0: 多 backend（whisper + gemma-4 audio）
+DAEMON_VERSION = "1.11.0"  # v1.11.0: 加 Breeze-ASR 全精度 backend（whisper + gemma-4 + breeze）
 
 # v1.7.9: 改用 Apple 官方 mlx-whisper（支援 large-v3-turbo，多語）
 HF_REPO_MAP = {
@@ -72,7 +72,18 @@ GEMMA_REPO_MAP = {
 }
 GEMMA_MAX_AUDIO_SEC = 30.0
 
-SUPPORTED_MODELS = list(HF_REPO_MAP.keys()) + list(GEMMA_REPO_MAP.keys())
+# v1.11.0: Breeze-ASR（聯發創新基地）全精度本機 backend（transformers + torch，非 MLX 量化）。
+#   - breeze-asr-26：Whisper-large-v2 微調，台語（Taigi）→ 華語漢字轉錄
+#   - breeze-asr-25：Whisper-large-v2 微調，台灣華語 + 華英混用（code-switching）
+# 全精度＝直接載 F32 safetensors，跑在 Apple Silicon MPS（無官方 MLX 權重，故走 PyTorch）。
+BREEZE_REPO_MAP = {
+    "breeze-asr-26": "MediaTek-Research/Breeze-ASR-26",
+    "breeze-asr-25": "MediaTek-Research/Breeze-ASR-25",
+}
+
+SUPPORTED_MODELS = (
+    list(HF_REPO_MAP.keys()) + list(GEMMA_REPO_MAP.keys()) + list(BREEZE_REPO_MAP.keys())
+)
 SUPPORTED_QUANTS = [None, "4bit", "8bit"]
 DEFAULT_MODEL = os.environ.get("LWM_DEFAULT_MODEL", "large-v3")
 DEFAULT_QUANT = os.environ.get("LWM_DEFAULT_QUANT") or None
@@ -82,6 +93,11 @@ MAX_AUDIO_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB hard cap
 def is_gemma_model(name: str) -> bool:
     """Dispatcher key — KISS: 前綴判別即可，新引擎加 elseif 一行."""
     return name.startswith("gemma-") or name in GEMMA_REPO_MAP
+
+
+def is_breeze_model(name: str) -> bool:
+    """v1.11.0: Breeze-ASR 全精度 backend 的 dispatcher key."""
+    return name.startswith("breeze-") or name in BREEZE_REPO_MAP
 
 
 def probe_audio_duration(path: str) -> float | None:
@@ -237,28 +253,115 @@ class GemmaAudioBackend(Backend):
         return text.strip()
 
 
+class BreezeBackend(Backend):
+    """v1.11.0: Breeze-ASR 全精度（transformers + torch）.
+
+    為何不走 mlx-whisper：Breeze-ASR-26/25 官方只出 F32 safetensors（PyTorch），
+    無官方 MLX 權重；「全精度」即直接載 F32 跑 HF pipeline，不做任何量化。
+    Apple Silicon 上優先用 MPS，否則退回 CPU。長音檔用 chunk_length_s 切塊處理。
+
+    懶載入：第一次用到才 import torch / transformers（避免雲端使用者吃 ~3GB 依賴）。
+    """
+    name = "breeze"
+
+    def __init__(self) -> None:
+        self._pipe = None
+        self._key: str | None = None
+
+    def _resolve_repo(self, model_name: str) -> str:
+        if "/" in model_name:
+            return model_name
+        if model_name not in BREEZE_REPO_MAP:
+            raise TranscribeError(400, f"unsupported breeze model: {model_name}")
+        return BREEZE_REPO_MAP[model_name]
+
+    def load(self, model_name: str) -> str:
+        repo = self._resolve_repo(model_name)
+        if self._key != model_name or self._pipe is None:
+            try:
+                import torch
+                from transformers import pipeline
+            except ImportError as exc:
+                raise TranscribeError(
+                    501,
+                    "transformers/torch 未安裝。請跑："
+                    "~/.botrun-hammer/venv/bin/pip install transformers torch accelerate "
+                    f"詳：{exc}",
+                )
+            # 全精度：F32。MPS 對 fp16 的部分算子支援不穩，故本機一律 fp32。
+            if torch.backends.mps.is_available():
+                device, dtype = "mps", torch.float32
+            elif torch.cuda.is_available():
+                device, dtype = "cuda", torch.float16
+            else:
+                device, dtype = "cpu", torch.float32
+            log(f"[breeze] load {model_name} -> {repo} device={device} dtype={dtype}")
+            self._pipe = None
+            t0 = time.time()
+            self._pipe = pipeline(
+                "automatic-speech-recognition",
+                model=repo,
+                torch_dtype=dtype,
+                device=device,
+                chunk_length_s=28,   # <30s Whisper 窗口，長音檔自動切塊
+            )
+            log(f"[breeze] loaded in {time.time() - t0:.2f}s")
+            self._key = model_name
+        return repo
+
+    def transcribe(self, audio_path: str, model_name: str, lang: str | None) -> str:
+        self.load(model_name)
+        # Breeze-26 台語→華語漢字；Breeze 系皆 Whisper-large-v2 微調，
+        # 預設讓模型自行判語言（強制 language 反而可能干擾微調行為）。
+        # 若呼叫端明確指定 lang 才轉成 whisper generate 參數。
+        generate_kwargs = {"task": "transcribe"}
+        if lang:
+            generate_kwargs["language"] = lang
+        result = self._pipe(
+            audio_path,
+            return_timestamps=True,   # 長音檔（>30s）切塊必須開，否則 transformers 報錯
+            generate_kwargs=generate_kwargs,
+        )
+        if isinstance(result, dict):
+            return (result.get("text") or "").strip()
+        return str(result).strip()
+
+
 class BackendCache:
     """v1.9.0: 依 model name 路由 backend；同時只保留一個 backend 載入的權重."""
 
+    # v1.11.0: backend 種類 -> 工廠，方便切換時「釋放非當前 backend」而不寫死每個分支
+    _FACTORIES = {
+        "gemma": GemmaAudioBackend,
+        "breeze": BreezeBackend,
+        "whisper": WhisperBackend,
+    }
+
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._whisper = WhisperBackend()
-        self._gemma = GemmaAudioBackend()
+        self._backends: dict[str, Backend] = {k: f() for k, f in self._FACTORIES.items()}
         self._current: Backend | None = None
         self._current_model: str | None = None
         self._loaded_at: float | None = None
 
+    def _kind(self, model_name: str) -> str:
+        if is_gemma_model(model_name):
+            return "gemma"
+        if is_breeze_model(model_name):
+            return "breeze"
+        return "whisper"
+
     def _pick(self, model_name: str) -> Backend:
-        return self._gemma if is_gemma_model(model_name) else self._whisper
+        return self._backends[self._kind(model_name)]
 
     def _load_impl(self, model_name: str) -> str:
         backend = self._pick(model_name)
         if self._current is not None and self._current is not backend:
-            log(f"backend switch: {self._current.name} -> {backend.name}; free other")
-            if self._current is self._whisper:
-                self._whisper = WhisperBackend()
-            else:
-                self._gemma = GemmaAudioBackend()
+            log(f"backend switch: {self._current.name} -> {backend.name}; free others")
+            # 釋放除目標外的所有 backend 權重（重建工廠即丟棄舊模型，讓 GC/MLX 回收）
+            for kind, fac in self._FACTORIES.items():
+                if self._backends[kind] is not backend:
+                    self._backends[kind] = fac()
             backend = self._pick(model_name)
         repo = backend.load(model_name)
         self._current = backend
