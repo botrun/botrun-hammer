@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.11.1 - Mac 語音轉文字
+  🔨 波特槌 v1.11.2 - Mac 語音轉文字
 
   由 Vertex AI Gemini（gcloud ADC 認證）驅動的語音輸入助手
 
@@ -24,10 +24,13 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.11.1"
+local VERSION = "1.11.2"
 
 -- 開機自動啟動 Hammerspoon（v1.7.11）
 pcall(function() hs.autoLaunch(true) end)
+
+-- v1.11.2：載入 hs.ipc，讓 `hs -c` 可驅動 E2E 驗證（缺這行 message port 連不上）
+pcall(function() require("hs.ipc") end)
 
 -- 目前腳本檔案路徑（用於自動更新）
 local SCRIPT_PATH = debug.getinfo(1, "S").source:match("^@(.+)$")
@@ -1107,10 +1110,16 @@ local function transcribeWithGemini(recordingFile, callback)
       > "$TMPDIR_BRH/req.json"
 
     # ⚠️ 絕對不要加 x-goog-user-project header：會被擋成 HTML 404，極難查
-    CODE=$(curl -s -o "$TMPDIR_BRH/resp.json" -w '%%{http_code}' \
+    # ⚠️ v1.11.2：固定用系統 /usr/bin/curl，且清空 Expect header——
+    #   舊版 curl（如 anaconda 的 7.68）對大 POST body 自動送 Expect: 100-continue，
+    #   Google 前端會回 417 + 「automated queries」HTML 封鎖頁
+    CURL=/usr/bin/curl
+    [ -x "$CURL" ] || CURL=curl
+    CODE=$("$CURL" -s -o "$TMPDIR_BRH/resp.json" -w '%%{http_code}' \
       -X POST "$HOST/v1/projects/$PROJECT/locations/$LOCATION/publishers/google/models/$MODEL:generateContent" \
       -H "Authorization: Bearer $TOKEN" \
       -H "Content-Type: application/json" \
+      -H "Expect:" \
       -d @"$TMPDIR_BRH/req.json")
 
     if [ "$CODE" = "200" ]; then
