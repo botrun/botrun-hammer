@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.11.2 - Mac 語音轉文字
+  🔨 波特槌 v1.11.3 - Mac 語音轉文字
 
   由 Vertex AI Gemini（gcloud ADC 認證）驅動的語音輸入助手
 
@@ -24,7 +24,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.11.2"
+local VERSION = "1.11.3"
 
 -- 開機自動啟動 Hammerspoon（v1.7.11）
 pcall(function() hs.autoLaunch(true) end)
@@ -54,6 +54,9 @@ local config = {
     -- v1.10.1：全面改用專屬 GCP 專案 botrun-hammer
     -- https://console.cloud.google.com/welcome?project=botrun-hammer
     defaultProject = "botrun-hammer",
+    -- 授權網域（v1.11.3）：botrun-hammer 的 IAM 綁的是 domain:cameo.tw，
+    -- 個人 Gmail 一律 403。可用 .env 的 VERTEX_ALLOWED_DOMAIN 覆寫（換公司時免改碼）
+    allowedDomain = "cameo.tw",
     -- inline base64 請求上限約 20MB，留安全邊際
     maxUploadBytes = 15 * 1024 * 1024,
     -- access token 快取秒數（實際有效期 1 小時，提早換發）
@@ -213,6 +216,31 @@ local function getVertexLocation()
   return config.vertex.location
 end
 
+-- 授權網域（v1.11.3）：.env 的 VERTEX_ALLOWED_DOMAIN 優先
+local function getAllowedDomain()
+  local d = getEnvKey("VERTEX_ALLOWED_DOMAIN")
+  if d and d ~= "" then return d end
+  return config.vertex.allowedDomain
+end
+
+-- 本機已登入且屬於授權網域的 gcloud 帳號清單（v1.11.3）
+-- ⚠️ 這跟 ADC 是兩套憑證庫：`gcloud auth login` 可多帳號並存不互相覆蓋，
+--    而 ADC 全機只有一份，被別的專案登入蓋掉就是本次故障的成因
+local function listDomainAccounts()
+  local gcloudPath = getGcloudPath()
+  if not gcloudPath then return {} end
+  local domainPattern = getAllowedDomain():gsub("%.", "\\.")
+  local out = hs.execute(string.format(
+    "\"%s\" auth list --filter='account~@%s$' --format='value(account)' 2>/dev/null",
+    gcloudPath, domainPattern))
+  local accounts = {}
+  for line in (out or ""):gmatch("[^\r\n]+") do
+    local acct = line:gsub("%s+", "")
+    if acct ~= "" then table.insert(accounts, acct) end
+  end
+  return accounts
+end
+
 -- ADC 狀態檢查（同步、輕量：只看憑證檔存在與否，不打網路）
 local function adcCredentialsExist()
   local p = os.getenv("HOME") .. "/.config/gcloud/application_default_credentials.json"
@@ -249,32 +277,35 @@ end
 
 -- 引導權限不足（403）：夥伴第一次使用最常見的狀況
 -- 直接把「要貼給管理者的那句話」放進剪貼簿，含自己的 Google 帳號
-local function guideVertexPermission(project)
-  local account = ""
-  local gcloudPath = getGcloudPath()
-  if gcloudPath then
-    local out = hs.execute("\"" .. gcloudPath .. "\" config get-value account 2>/dev/null")
-    account = (out or ""):gsub("%s+$", "")
-  end
-  if account == "" then account = "（你的 Google 帳號）" end
+--
+-- ⚠️ v1.11.3 修正：舊版印的是 `gcloud config get-value account`（CLI 身分），
+--    但實際打 Vertex 用的是 ADC（SDK 身分）——兩者是不同憑證，
+--    導致 403 時彈窗指著一個無辜的帳號，害人查半天。
+--    現在一律由 shell 回報「本次請求實際用的身分」再傳進來。
+local function guideVertexPermission(project, actualAccount)
+  local domain = getAllowedDomain()
+  local account = actualAccount
+  if not account or account == "" then account = "（你的 Google 帳號）" end
 
-  local isCameo = account:match("@cameo%.tw$") ~= nil
+  local isCameo = account:match("@" .. domain:gsub("%.", "%%.") .. "$") ~= nil
   if isCameo then
     hs.pasteboard.setContents("波特槌 403：" .. account .. " / 專案 " .. tostring(project))
     hs.alert.show(
       "🚫 帳號 " .. account .. " 目前無法使用「" .. tostring(project) .. "」" ..
-      "\n\n@cameo.tw 應已全網域授權，請把剪貼簿內容貼給管理者",
+      "\n\n@" .. domain .. " 應已全網域授權，請把剪貼簿內容貼給管理者",
       10
     )
   else
-    hs.pasteboard.setContents("gcloud auth application-default login")
+    -- 個人帳號：ADC 被別的專案蓋掉是最常見成因（本機也找不到公司帳號可自動接手）
+    local cmd = "gcloud auth application-default login --account=你的帳號@" .. domain
+    hs.pasteboard.setContents(cmd)
     hs.alert.show(
-      "🚫 你登入的是個人帳號：" .. account ..
-      "\n\n波特槌已對 @cameo.tw 全網域開放" ..
-      "\n請用公司帳號重新登入（指令已複製到剪貼簿）：" ..
-      "\ngcloud auth application-default login" ..
-      "\n\n選帳號時請選你的 @cameo.tw 帳號，之後按 F5 即可",
-      12
+      "🚫 目前實際使用的身分是：" .. account ..
+      "\n（這是 ADC 憑證的帳號，不是 gcloud CLI 的帳號）" ..
+      "\n\n波特槌只對 @" .. domain .. " 全網域開放，且本機找不到" ..
+      "\n任何可自動接手的 @" .. domain .. " 帳號" ..
+      "\n\n請用公司帳號重新登入（指令已複製到剪貼簿）：\n" .. cmd,
+      14
     )
     hs.timer.doAfter(1, function()
       hs.execute("open -a Terminal \"" .. os.getenv("HOME") .. "\"")
@@ -1054,6 +1085,7 @@ local function transcribeWithGemini(recordingFile, callback)
 
   local project = getVertexProject()
   local location = getVertexLocation()
+  local allowedDomain = getAllowedDomain()
   local jqPath = getJqPath()
   local ffmpegPath = getFFmpegPath()
   local _attrs = hs.fs.attributes(recordingFile)
@@ -1079,8 +1111,67 @@ local function transcribeWithGemini(recordingFile, callback)
     MODEL=%s
     HOST=%s
     MAXB=%d
+    DOMAIN=%s
+    DOMAIN_RE=%s
+
+    # ⚠️ v1.11.2：固定用系統 /usr/bin/curl，且清空 Expect header（原因見下方 POST）
+    CURL=/usr/bin/curl
+    [ -x "$CURL" ] || CURL=curl
+
+    # ── v1.11.3：身分自動偵測與切換 ──────────────────────────────
+    # 背景：Vertex 專案的 IAM 綁 domain:<DOMAIN>，個人 Gmail 一律 403。
+    # 而 ADC（application_default_credentials.json）全機只有一份，任何專案跑
+    # `gcloud auth application-default login` 都會把它蓋掉——這就是 2026-07-30
+    # 故障成因（波特槌的 ADC 被另一個專案的登入換成個人 Gmail，連壞 5 次轉錄）。
+    # 對策：先問出 ADC 的真實身分，不屬於授權網域就自動改用本機已登入的公司帳號。
+    # gcloud `auth login` 憑證庫可多帳號並存、不互相覆蓋，所以這條路徑拿得穩。
+    ADC_FILE="$HOME/.config/gcloud/application_default_credentials.json"
+    AUTH_MODE=adc
+    AUTH_ACCOUNT=""
 
     TOKEN=$("$GCLOUD" auth application-default print-access-token 2>/tmp/botrun-adc-err.txt)
+
+    # 查 ADC 身分：以 ADC 檔 mtime 當快取鍵——重新登入必換 mtime、快取自動失效，
+    # 命中時零額外網路往返（不會拖慢正常轉錄）
+    if [ -n "$TOKEN" ]; then
+      ADC_MTIME=$(stat -f %%m "$ADC_FILE" 2>/dev/null || echo 0)
+      CACHE="$HOME/.botrun-hammer/adc-identity.cache"
+      CACHED_MTIME=$(cut -f1 "$CACHE" 2>/dev/null)
+      CACHED_EMAIL=$(cut -f2 "$CACHE" 2>/dev/null)
+      if [ "$CACHED_MTIME" = "$ADC_MTIME" ] && [ -n "$CACHED_EMAIL" ]; then
+        AUTH_ACCOUNT="$CACHED_EMAIL"
+      else
+        AUTH_ACCOUNT=$("$CURL" -s --max-time 8 \
+          "https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=$TOKEN" \
+          | "$JQ" -r '.email // empty')
+        if [ -n "$AUTH_ACCOUNT" ]; then
+          mkdir -p "$HOME/.botrun-hammer"
+          echo "$ADC_MTIME"$'\t'"$AUTH_ACCOUNT" > "$CACHE"
+        fi
+      fi
+    fi
+
+    # ADC 身分不屬於授權網域（或整個取不到）→ 自動接手
+    case "$AUTH_ACCOUNT" in
+      *@"$DOMAIN") : ;;
+      *)
+        ALT_ACCT=$("$GCLOUD" auth list --filter="account~@${DOMAIN_RE}\$" \
+          --format='value(account)' 2>/dev/null | head -1)
+        if [ -n "$ALT_ACCT" ]; then
+          ALT_TOKEN=$("$GCLOUD" auth print-access-token --account="$ALT_ACCT" 2>/dev/null)
+          if [ -n "$ALT_TOKEN" ]; then
+            TOKEN="$ALT_TOKEN"
+            AUTH_MODE=switched
+            AUTH_ACCOUNT="$ALT_ACCT"
+          fi
+        fi
+        ;;
+    esac
+
+    # 回報本次「實際使用」的身分給 Lua——403 引導必須印這個，
+    # 不能再印 `gcloud config get-value account`（那是 CLI 身分，不是送出去的那把）
+    echo "botrun-auth mode=$AUTH_MODE account=$AUTH_ACCOUNT" >&2
+
     if [ -z "$TOKEN" ]; then
       cat /tmp/botrun-adc-err.txt >&2
       exit 90
@@ -1110,11 +1201,9 @@ local function transcribeWithGemini(recordingFile, callback)
       > "$TMPDIR_BRH/req.json"
 
     # ⚠️ 絕對不要加 x-goog-user-project header：會被擋成 HTML 404，極難查
-    # ⚠️ v1.11.2：固定用系統 /usr/bin/curl，且清空 Expect header——
+    # ⚠️ v1.11.2：固定用系統 /usr/bin/curl（上方已設），且清空 Expect header——
     #   舊版 curl（如 anaconda 的 7.68）對大 POST body 自動送 Expect: 100-continue，
     #   Google 前端會回 417 + 「automated queries」HTML 封鎖頁
-    CURL=/usr/bin/curl
-    [ -x "$CURL" ] || CURL=curl
     CODE=$("$CURL" -s -o "$TMPDIR_BRH/resp.json" -w '%%{http_code}' \
       -X POST "$HOST/v1/projects/$PROJECT/locations/$LOCATION/publishers/google/models/$MODEL:generateContent" \
       -H "Authorization: Bearer $TOKEN" \
@@ -1137,12 +1226,20 @@ local function transcribeWithGemini(recordingFile, callback)
     shellQuote(gcloudPath), shellQuote(ffmpegPath), shellQuote(jqPath),
     shellQuote(recordingFile), shellQuote(project), shellQuote(location),
     shellQuote(config.geminiModel), shellQuote(config.vertex.host),
-    config.vertex.maxUploadBytes)
+    config.vertex.maxUploadBytes,
+    shellQuote(allowedDomain), shellQuote((allowedDomain:gsub("%.", "\\."))))
 
   local task = hs.task.new("/bin/bash", function(exitCode, stdout, stderr)
     local _latency = hs.timer.secondsSinceEpoch() - _txStartEpoch
     local _stdoutLen = stdout and #stdout or 0
     local _stderrLen = stderr and #stderr or 0
+
+    -- v1.11.3：shell 回報的「本次實際身分」（403 引導與 telemetry 都用它）
+    local _authMode = (stderr or ""):match("botrun%-auth mode=(%S+)")
+    local _authAccount = (stderr or ""):match("botrun%-auth mode=%S+ account=(%S+)")
+    if _authMode == "switched" then
+      print(string.format("[波特槌][auth] ADC 身分不符，已自動切換為 %s", tostring(_authAccount)))
+    end
 
     -- 認證/權限類錯誤：不重試，直接引導使用者處理
     if exitCode == 90 or exitCode == 92 then
@@ -1150,12 +1247,13 @@ local function transcribeWithGemini(recordingFile, callback)
       cloudLog("transcribe_failed", {
         file_basename = basename, file_size = _fileSize, reason = reason,
         latency_s = _latency, vertex_project = project,
+        auth_mode = _authMode, auth_account = _authAccount,
         stderr_tail = (stderr or ""):sub(-800),
       }, "ERROR")
       if exitCode == 90 then
         guideAdcLogin("Google Cloud 憑證已過期或無效")
       else
-        guideVertexPermission(project)
+        guideVertexPermission(project, _authAccount)
       end
       callback(nil, (exitCode == 90) and "ADC 憑證失效" or "Vertex 權限不足")
       return
@@ -1185,6 +1283,7 @@ local function transcribeWithGemini(recordingFile, callback)
 
     cloudLog("transcribe_request_done", {
       file_basename = basename,
+      auth_mode = _authMode, auth_account = _authAccount,
       latency_s = _latency,
       stdout_bytes = _stdoutLen,
       stderr_bytes = _stderrLen,

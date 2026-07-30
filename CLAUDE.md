@@ -1,6 +1,6 @@
 ## 波特槌版本規則
 
-**當前版本: 1.11.2**
+**當前版本: 1.11.3**
 
 ### 🔑 GCP 專案與認證（永久規則，v1.10.1 起；v1.10.2 加開 @cameo.tw 全網域）
 - **本案專屬 GCP 專案＝`botrun-hammer`**（<https://console.cloud.google.com/welcome?project=botrun-hammer>），所有 Vertex AI 呼叫一律走這顆；程式預設值與 `.env` 的 `VERTEX_PROJECT` 皆為 `botrun-hammer`。
@@ -8,6 +8,7 @@
 - **最小權限授權（2026-07-23 起）**：不給 `roles/aiplatform.user`（含訓練／部署／刪除端點），改用自訂角色 **`projects/botrun-hammer/roles/botrunHammerPredict`**，只含 `aiplatform.endpoints.predict` 一條權限——ASR 需要的就只有這條，已實測 200 且真錄音 E2E 通過。加人指令：`gcloud projects add-iam-policy-binding botrun-hammer --member="user:<帳號>" --role="projects/botrun-hammer/roles/botrunHammerPredict"`。
 - **@cameo.tw 全網域已授權**：`domain:cameo.tw` 已綁上述最小權限角色於 `botrun-hammer`，公司同仁只要用 **@cameo.tw 帳號**跑 ADC 登入即可直接使用，管理者無須逐一開通。個人 Gmail 登入會 403 —— 程式與安裝腳本會偵測帳號網域並引導改用公司帳號重登。
 - **夥伴上機三步**：① `curl -fsSL .../install.sh | bash`（會自動裝 gcloud 並引導 ADC 登入）② 安裝腳本會實測一次 Vertex 連線 ③ 若 403，腳本／F5 會把「請幫我開通波特槌：<帳號>」複製到剪貼簿，管理者執行 `gcloud projects add-iam-policy-binding botrun-hammer --member="user:<帳號>" --role="projects/botrun-hammer/roles/botrunHammerPredict"` 即可，不需重裝。
+- **⚠️ ADC 全機只有一份，會被別的專案登入蓋掉（v1.11.3 治本）**：`gcloud auth application-default login` 寫的是**唯一**一份 `~/.config/gcloud/application_default_credentials.json`——只要為了別的 GCP 專案登入一次，波特槌的身分就被換掉，之後每次 F5 都 403。這跟 `gcloud auth login`（CLI 身分，多帳號並存不互蓋）**是兩套憑證**，`gcloud config get-value account` 顯示正常不代表 ADC 正常。v1.11.3 起程式會自己查 ADC 真實身分（tokeninfo，以 ADC 檔 mtime 當快取鍵），非授權網域就**自動改用本機已登入的 @cameo.tw 帳號** user token，使用者無感；真的無帳號可接手才引導重登，且彈窗印的是**實際送出請求的身分**（舊版印 CLI 身分，會指著無辜帳號害人查半天）。
 - **地雷**：`gemini-3.5-flash` 只在 `global`／`us`／`asia-southeast1`；`thinkingConfig` 必須包在 `generationConfig` 內（放外層 400）；絕不可加 `x-goog-user-project` header（HTML 404）。
 
 ### 永久規則
