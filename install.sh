@@ -311,15 +311,47 @@ if [[ -n "${GCLOUD_BIN:-}" ]]; then
     if [[ -n "$ADC_TOKEN" ]]; then
         echo ""
         printf "🔍 實測 Vertex AI 連線: %s / %s ...\n" "$VP" "$VL"
+
+        # v1.11.3：問出 ADC 的「真實身分」——不能用 `gcloud config get-value account`，
+        # 那是 CLI 身分，跟實際送出請求的 ADC 是兩套憑證。ADC 全機只有一份，
+        # 為別的 GCP 專案登入一次就會被蓋掉，舊版在此印錯帳號害人誤判。
+        MY_ACCOUNT=$(curl -s --max-time 8 \
+            "https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=$ADC_TOKEN" \
+            | sed -n 's/.*"email"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+        [[ -z "$MY_ACCOUNT" ]] && MY_ACCOUNT=$("$GCLOUD_BIN" config get-value account 2>/dev/null)
+
+        # ADC 身分不是公司帳號 → 改用本機已登入的 @cameo.tw 帳號實測
+        # （波特槌 v1.11.3+ 執行期也會這樣自動接手，所以這裡要測出跟實際一致的結果）
+        VTEST_TOKEN="$ADC_TOKEN"
+        SWITCHED_ACCOUNT=""
+        if [[ "$MY_ACCOUNT" != *"@cameo.tw" ]]; then
+            ALT_ACCT=$("$GCLOUD_BIN" auth list --filter='account~@cameo\.tw$' \
+                --format='value(account)' 2>/dev/null | head -1)
+            if [[ -n "$ALT_ACCT" ]]; then
+                ALT_TOKEN=$("$GCLOUD_BIN" auth print-access-token --account="$ALT_ACCT" 2>/dev/null || true)
+                if [[ -n "$ALT_TOKEN" ]]; then
+                    VTEST_TOKEN="$ALT_TOKEN"
+                    SWITCHED_ACCOUNT="$ALT_ACCT"
+                fi
+            fi
+        fi
+
         # ⚠️ 絕不可加 x-goog-user-project header（會被擋成 HTML 404）
         VTEST_CODE=$(curl -s -o /tmp/botrun-hammer-vertex-test.json -w '%{http_code}' \
             -X POST "https://aiplatform.googleapis.com/v1/projects/$VP/locations/$VL/publishers/google/models/gemini-3.5-flash:generateContent" \
-            -H "Authorization: Bearer $ADC_TOKEN" \
+            -H "Authorization: Bearer $VTEST_TOKEN" \
             -H "Content-Type: application/json" \
+            -H "Expect:" \
             -d '{"contents":[{"role":"user","parts":[{"text":"ok"}]}],"generationConfig":{"maxOutputTokens":8}}' || echo "000")
-        MY_ACCOUNT=$("$GCLOUD_BIN" config get-value account 2>/dev/null)
         if [[ "$VTEST_CODE" == "200" ]]; then
             echo -e "${GREEN}✅ Vertex AI 連線正常，語音轉文字可以直接使用${NC}"
+            if [[ -n "$SWITCHED_ACCOUNT" ]]; then
+                # 注意：變數後面接全形字元時務必用 ${VAR} 界定，否則 bash 會把
+                # 多位元組字元當成變數名的一部分 → unbound variable
+                echo -e "${YELLOW}   ℹ️  你的 ADC 目前是 ${MY_ACCOUNT}（非公司帳號，可能被其他 GCP 專案的登入蓋掉）${NC}"
+                echo -e "${YELLOW}      波特槌已自動改用 ${SWITCHED_ACCOUNT}，可直接使用；${NC}"
+                echo -e "${YELLOW}      想根治可執行：${BOLD}gcloud auth application-default login --account=${SWITCHED_ACCOUNT}${NC}"
+            fi
         elif [[ "$VTEST_CODE" == "403" ]]; then
             if [[ "$MY_ACCOUNT" == *"@cameo.tw" ]]; then
                 echo -e "${RED}❌ 帳號 $MY_ACCOUNT 目前無法使用 $VP${NC}"
@@ -328,11 +360,13 @@ if [[ -n "${GCLOUD_BIN:-}" ]]; then
                 echo ""
                 printf "   %b波特槌 403：%s / 專案 %s%b\n" "$BOLD" "$MY_ACCOUNT" "$VP" "$NC"
             else
-                echo -e "${RED}❌ 你目前登入的是個人帳號：$MY_ACCOUNT${NC}"
+                echo -e "${RED}❌ 目前實際使用的身分是個人帳號：$MY_ACCOUNT${NC}"
+                echo -e "   （這是 ADC 憑證的帳號，不是 gcloud CLI 的帳號；本機也找不到"
+                echo -e "     可自動接手的 @cameo.tw 帳號）"
                 echo ""
                 echo -e "   波特槌已對 ${BOLD}@cameo.tw${NC} 全網域開放，請改用公司帳號重新登入："
                 echo ""
-                printf "   %bgcloud auth application-default login%b\n" "$BOLD" "$NC"
+                printf "   %bgcloud auth application-default login --account=你的帳號@cameo.tw%b\n" "$BOLD" "$NC"
                 echo ""
                 echo -e "   （瀏覽器出現選帳號畫面時，選你的 ${BOLD}@cameo.tw${NC} 帳號）"
                 echo ""
