@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.11.4 - Mac 語音轉文字
+  🔨 波特槌 v1.11.5 - Mac 語音轉文字
 
   由 Vertex AI Gemini（gcloud ADC 認證）驅動的語音輸入助手
 
@@ -24,7 +24,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.11.4"
+local VERSION = "1.11.5"
 
 -- 開機自動啟動 Hammerspoon（v1.7.11）
 pcall(function() hs.autoLaunch(true) end)
