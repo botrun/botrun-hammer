@@ -1,6 +1,6 @@
 ## 波特槌版本規則
 
-**當前版本: 1.11.3**
+**當前版本: 1.11.4**
 
 ### 🔑 GCP 專案與認證（永久規則，v1.10.1 起；v1.10.2 加開 @cameo.tw 全網域）
 - **本案專屬 GCP 專案＝`botrun-hammer`**（<https://console.cloud.google.com/welcome?project=botrun-hammer>），所有 Vertex AI 呼叫一律走這顆；程式預設值與 `.env` 的 `VERTEX_PROJECT` 皆為 `botrun-hammer`。

@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.11.3 - Mac 語音轉文字
+  🔨 波特槌 v1.11.4 - Mac 語音轉文字
 
   由 Vertex AI Gemini（gcloud ADC 認證）驅動的語音輸入助手
 
@@ -24,7 +24,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.11.3"
+local VERSION = "1.11.4"
 
 -- 開機自動啟動 Hammerspoon（v1.7.11）
 pcall(function() hs.autoLaunch(true) end)
@@ -1065,6 +1065,7 @@ end
 -- shell exit code 契約（給 Lua 端做「清晰引導」）：
 --   90 = ADC 未登入 / token 取不到；91 = 音檔過大；92 = 403 權限不足
 --   93 = ffmpeg 轉檔失敗；94 = 其他 HTTP 錯誤
+--   95 = v1.11.4 送出前把關：身分明確不屬於授權網域且無帳號可接手（未送出請求）
 local function transcribeWithGemini(recordingFile, callback)
   local gcloudPath = getGcloudPath()
   local basename = recordingFile and (recordingFile:match("([^/]+)$") or "") or ""
@@ -1128,6 +1129,7 @@ local function transcribeWithGemini(recordingFile, callback)
     ADC_FILE="$HOME/.config/gcloud/application_default_credentials.json"
     AUTH_MODE=adc
     AUTH_ACCOUNT=""
+    ALT_STATUS=na          # 接手結果：na／none（本機無公司帳號）／token_failed（有帳號但要重登）
 
     TOKEN=$("$GCLOUD" auth application-default print-access-token 2>/tmp/botrun-adc-err.txt)
 
@@ -1163,19 +1165,45 @@ local function transcribeWithGemini(recordingFile, callback)
             TOKEN="$ALT_TOKEN"
             AUTH_MODE=switched
             AUTH_ACCOUNT="$ALT_ACCT"
+          else
+            # 有公司帳號但換不到 token（多半是該帳號憑證過期，要重跑 gcloud auth login）
+            ALT_STATUS="token_failed:$ALT_ACCT"
           fi
+        else
+          ALT_STATUS=none
         fi
         ;;
     esac
 
     # 回報本次「實際使用」的身分給 Lua——403 引導必須印這個，
     # 不能再印 `gcloud config get-value account`（那是 CLI 身分，不是送出去的那把）
-    echo "botrun-auth mode=$AUTH_MODE account=$AUTH_ACCOUNT" >&2
+    echo "botrun-auth mode=$AUTH_MODE account=$AUTH_ACCOUNT alt=$ALT_STATUS" >&2
 
     if [ -z "$TOKEN" ]; then
       cat /tmp/botrun-adc-err.txt >&2
       exit 90
     fi
+
+    # ── v1.11.4 送出前硬把關（pre-flight gate）──────────────────
+    # 需求：轉錄的「那一瞬間」必須確定是授權網域的身分，不是就別送。
+    # v1.11.3 只做到「不合格就試著切」，切不到仍照送 → 又白費一次錄音換一個 403。
+    # 現在確認不合格就當場擋下（exit 95），使用者拿到的是「身分不對」而不是
+    # 語意模糊的「權限不足」，而且錄音檔照樣保留、不會白錄。
+    case "$AUTH_ACCOUNT" in
+      *@"$DOMAIN")
+        : ;;                      # ✅ 確認合格，放行
+      "")
+        # 查不到身分（多半是 tokeninfo 逾時／離線）。此時 ADC 很可能本來就是
+        # 公司帳號——同事正常安裝就是這種狀態，硬擋會造成誤殺，
+        # 故放行讓 API 自己裁決；真的沒權限會走既有 403 引導。
+        echo "botrun-auth warn=identity_unknown" >&2
+        ;;
+      *)
+        # ❌ 明確不是授權網域，且本機沒有可接手的帳號 → 當場擋下，不送出
+        echo "identity not allowed: $AUTH_ACCOUNT (need @$DOMAIN)" >&2
+        exit 95
+        ;;
+    esac
 
     TMPDIR_BRH=$(mktemp -d -t botrun-vertex)
     trap 'rm -rf "$TMPDIR_BRH"' EXIT
@@ -1236,9 +1264,39 @@ local function transcribeWithGemini(recordingFile, callback)
 
     -- v1.11.3：shell 回報的「本次實際身分」（403 引導與 telemetry 都用它）
     local _authMode = (stderr or ""):match("botrun%-auth mode=(%S+)")
-    local _authAccount = (stderr or ""):match("botrun%-auth mode=%S+ account=(%S+)")
+    local _authAccount = (stderr or ""):match("botrun%-auth mode=%S+ account=(%S*)")
+    local _authAlt = (stderr or ""):match("botrun%-auth mode=%S+ account=%S* alt=(%S+)")
     if _authMode == "switched" then
       print(string.format("[波特槌][auth] ADC 身分不符，已自動切換為 %s", tostring(_authAccount)))
+    end
+
+    -- v1.11.4：送出前把關擋下（身分明確不是授權網域，且無帳號可接手）
+    -- 跟 92（真的送出去被 Google 拒）分開，因為使用者要採取的行動完全不同
+    if exitCode == 95 then
+      cloudLog("transcribe_failed", {
+        file_basename = basename, file_size = _fileSize,
+        reason = "identity_not_allowed", latency_s = _latency,
+        vertex_project = project, auth_mode = _authMode, auth_account = _authAccount,
+      }, "ERROR")
+      print(string.format("[波特槌][auth] 身分不合格已擋下，未送出請求：%s（alt=%s）",
+        tostring(_authAccount), tostring(_authAlt)))
+      -- 區分「本機根本沒有公司帳號」與「有但憑證過期」——兩者要做的事完全不同
+      local staleAccount = _authAlt and _authAlt:match("^token_failed:(.+)$")
+      if staleAccount then
+        local cmd = "gcloud auth login " .. staleAccount
+        hs.pasteboard.setContents(cmd)
+        hs.alert.show(
+          "🚫 未送出轉錄：目前身分是 " .. tostring(_authAccount) ..
+          "\n\n本機找得到公司帳號 " .. staleAccount .. "，但它的憑證已過期" ..
+          "\n請重新登入它（指令已複製到剪貼簿）：\n" .. cmd ..
+          "\n\n錄音已保留，登入後可從 F6 選單重轉",
+          14
+        )
+      else
+        guideVertexPermission(project, _authAccount)
+      end
+      callback(nil, "身分不是 @" .. allowedDomain .. "，已擋下未送出（錄音已保留）")
+      return
     end
 
     -- 認證/權限類錯誤：不重試，直接引導使用者處理
