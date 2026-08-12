@@ -1,6 +1,6 @@
 ## 波特槌版本規則
 
-**當前版本: 1.11.5**
+**當前版本: 1.12.0**
 
 ### 🔑 GCP 專案與認證（永久規則，v1.10.1 起；v1.10.2 加開 @cameo.tw 全網域）
 - **本案專屬 GCP 專案＝`botrun-hammer`**（<https://console.cloud.google.com/welcome?project=botrun-hammer>），所有 Vertex AI 呼叫一律走這顆；程式預設值與 `.env` 的 `VERTEX_PROJECT` 皆為 `botrun-hammer`。
@@ -27,6 +27,7 @@
 - 主版本 (major)：重大變更、不相容
 
 ### 地雷經驗文件索引
+- [⭐⭐⭐ v1.12.0 補轉未完成錄音（Re-transcribe）8 條地雷](docs/2026-08-12_211413_v1.12.0-補轉未完成錄音-地雷傳承.md) — **錯誤訊息裡每一句「按 X 可以 Y」都是規格**：v1.11.4 彈窗寫「登入後可從 F6 重轉」但那功能從不存在，使用者照做只得到 Finder 視窗（broken promise 比不說更傷）；**事後補救不可沿用當下的輸出方式**——補轉一律只進剪貼簿不自動貼上（游標可能在 Terminal 被當指令執行），並用「pasteText 會還原剪貼簿」的副作用當哨兵做動態驗證；**非同步回呼會遺失（7 次批次 2 次），批次必須有監督者**，否則 running 卡 true 讓整個功能按不動（局部故障升級成全域故障），配套 token 版號＋timer 強引用＋失聯狀態退回；另含 `hs -c` 非同步 print 不回終端機（害我誤判 3 次）、殘留狀態讓重跑靜默不執行、**bash 變數後接全形字元變 unbound variable**（`${VAR}` 一律加括號）、`hs -c` 首次載入 extension 污染 stdout、FIFO 淘汰必須保護待處理項否則音檔變孤兒。驗收 `scripts/test_retranscribe.sh` S1–S8 全過，真實救回本機 3 筆躺著沒轉的錄音（[DAG](docs/2026-08-12_203824_v1.12.0-補轉未完成錄音-DAG.md)）
 - [⭐⭐⭐ v1.11.2 anaconda PATH 污染二連擊（curl 417 + x86_64 uv/venv）](docs/2026-07-23_v1.11.2-anaconda-path-pollution-debug-fix.md) — 「另一台可以、這台不行」先 `which -a` + `file` 查 PATH：anaconda x86_64 curl 7.68 對大 POST 送 `Expect: 100-continue` 被 Google 前端 417 封鎖（修法：固定 `/usr/bin/curl` + `-H "Expect:"`）；anaconda x86_64 uv 在 Apple Silicon 建出 x86_64 venv 使 arm64-only 的 mlx 裝不上（修法：`pick_uv()` 按 `uname -m` 挑原生架構 + venv 架構不符自動備份重建 + 新增 `install-breeze` 指令）；缺 `require("hs.ipc")` 會讓所有 `hs -c` E2E SOP 無聲失效
 - [v1.9.4 雲端模型升級 gemini-3.5-flash](docs/2026-07-11_214041_gemini35-flash-upgrade.html) — 查證 3 件事只需改 1 件（model id）；Gemini 3.x 禁 thinkingLevel＋thinkingBudget 並用（400）、thinking 無法全關 MINIMAL 是地板、官方建議移除 temperature/top_p/top_k；Files API resumable 上傳 3.5 沒變；「一樣就不用改」的查證價值
 - [⭐⭐⭐ v1.11.1 Breeze-ASR-26 全精度（fp32）本機引擎 + 發布缺口治本](docs/2026-07-23_breeze-asr-26-fp32-本機引擎.html) — 三傳承節點：(A) 「全精度」是需求硬約束——官方僅出 F32 safetensors、無 MLX 權重，故走 `transformers` fp32（MPS `torch_dtype=float32`）而非既有 mlx-whisper；(B) 使用者質疑「真的是 fp32 嗎、怎麼這麼快」→ 用三方對帳（下載 6.18GB／RAM 6.17GB／15.43 億參數×4bytes）把宣稱逼成鐵證，執行期印 `param.dtype`+`bytes/param`（fp32=4·fp16=2·8bit=1·4bit=0.5）；(C) **發布缺口**：lua 前端 auto-update 讓同事看到新選單，但 `ensureLwmScriptsDeployed` 舊邏輯只「缺檔才補」→ 既有 daemon 停 1.9.0 不認 breeze、一選就 400，治本改「版本落後即重抓+重啟」（L3 通則：任何自我修復要從缺檔判斷升級為版本判斷）；真實 E2E 25s 音檔 MPS fp32 轉錄 23s、專有名詞正確。IAP 已發布（botrun-five）。
