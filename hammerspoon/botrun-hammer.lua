@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.11.5 - Mac 語音轉文字
+  🔨 波特槌 v1.12.0 - Mac 語音轉文字
 
   由 Vertex AI Gemini（gcloud ADC 認證）驅動的語音輸入助手
 
@@ -10,6 +10,9 @@
   - 再按 F5 停止錄音
   - 轉錄中按 ESC 或 F5 可取消轉錄（錄音檔保留）
   - F6 統一選單：引擎切換 + 文字歷史 + 錄音檔案（v1.7.15 起合併原 F6/F7/F8）
+  - 補轉未完成錄音（v1.12.0）：轉錄失敗／取消的錄音會留在 F6 清單，
+    登入或修好環境後按 F6 →「🔁 補轉 N 筆未完成錄音」一鍵救回
+    （補轉結果只進剪貼簿、不自動貼上——事後補轉時游標可能在任何地方）
   - 自動更新：啟動時及每 4 小時檢查 GitHub 最新版本
 
   安裝：
@@ -24,7 +27,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.11.5"
+local VERSION = "1.12.0"
 
 -- 開機自動啟動 Hammerspoon（v1.7.11）
 pcall(function() hs.autoLaunch(true) end)
@@ -149,6 +152,16 @@ local state = {
   heartbeatTickCount = 0,      -- 心跳次數（用於指數測試比對）
 }
 
+-- v1.12.0：批次補轉狀態（宣告在此，讓 cancelTranscription 能中止整批）
+local retranscribeState = {
+  running = false,
+  queue = {},
+  index = 0,
+  okCount = 0,
+  failCount = 0,
+  consecutiveFails = 0,
+}
+
 -- 轉錄中動畫 emoji 列表
 local transcribeEmojis = {"✨", "🌟", "💫", "⭐", "🔮", "💭", "📝", "✍️"}
 
@@ -254,7 +267,7 @@ local function guideAdcLogin(reasonText)
   hs.alert.show(
     "🔑 " .. (reasonText or "需要 Google Cloud 授權") ..
     "\n\n已複製指令到剪貼簿，請在終端機貼上執行：\n" .. cmd ..
-    "\n\n登入後回來按 F5 即可繼續",
+    "\n\n錄音已保留。登入後按 F6 →「🔁 補轉」把剛剛那段救回來",
     8
   )
   hs.timer.doAfter(1, function()
@@ -644,6 +657,24 @@ local function saveHistory(history)
   end
 end
 
+-- ────────────────────────────────────────
+-- v1.12.0：待補轉（pending）判定
+-- ────────────────────────────────────────
+-- SSOT：pending 不另建佇列檔，直接由 history.json 的 status 推導出來。
+--   （另建 queue 檔＝兩份真相，同步一失敗就永遠對不起來，這是刻意不做的）
+-- 定義：status ∈ {failed, cancelled, transcribing} 且音檔仍在 ＝ 可以補轉。
+--   · transcribing 也算：Hammerspoon 重載／當機會讓紀錄永遠卡在這個狀態
+--   · 音檔不存在就不算：無法補轉的東西不該給使用者希望
+local PENDING_STATUS = { failed = true, cancelled = true, transcribing = true }
+
+local function isPendingEntry(entry)
+  if not entry or not entry.filePath then return false end
+  if not PENDING_STATUS[entry.status or "done"] then return false end
+  -- 正在轉錄中的那一筆不算待補轉（它還在跑，不需要救）
+  if state.transcribeFile == entry.filePath then return false end
+  return hs.fs.attributes(entry.filePath) ~= nil
+end
+
 -- 新增一筆歷史紀錄（KISS: 簡單的 FIFO 佇列）
 -- status: "transcribing" | "done" | "failed" | "cancelled"（向下相容：無 status 視為 done）
 local function addToHistory(text, filePath, status)
@@ -655,8 +686,16 @@ local function addToHistory(text, filePath, status)
     status = status or "done",
   }
   table.insert(history, 1, entry)
+  -- v1.12.0：淘汰時「跳過」待補轉項，只淘汰已完成的。
+  -- 舊版直接 remove 尾端：重度使用者 30 筆一輪就把待救錄音沖出歷史，
+  -- 音檔還躺在資料夾裡卻再也沒有索引找得到它 ＝ 實質永久遺失。
   while #history > config.maxHistory do
-    table.remove(history)
+    local removeIdx = nil
+    for i = #history, 1, -1 do
+      if not isPendingEntry(history[i]) then removeIdx = i break end
+    end
+    if not removeIdx then break end  -- 全是待補轉：寧可超出上限，也不丟資料
+    table.remove(history, removeIdx)
   end
   saveHistory(history)
 end
@@ -673,6 +712,24 @@ local function updateHistoryEntry(filePath, text, status)
     end
   end
   return false
+end
+
+-- 依檔案路徑找回歷史紀錄（v1.12.0：chooser 只帶 filePath，狀態一律回 history 現查，
+-- 避免把狀態複製一份到 UI 元件裡跟 SSOT 不同步）
+local function findHistoryEntry(filePath)
+  for _, entry in ipairs(loadHistory()) do
+    if entry.filePath == filePath then return entry end
+  end
+  return nil
+end
+
+-- 列出所有待補轉的錄音（新到舊，與 history 同序）
+local function listPendingEntries()
+  local pending = {}
+  for _, entry in ipairs(loadHistory()) do
+    if isPendingEntry(entry) then table.insert(pending, entry) end
+  end
+  return pending
 end
 
 -- UTF-8 安全截斷文字
@@ -1289,7 +1346,7 @@ local function transcribeWithGemini(recordingFile, callback)
           "🚫 未送出轉錄：目前身分是 " .. tostring(_authAccount) ..
           "\n\n本機找得到公司帳號 " .. staleAccount .. "，但它的憑證已過期" ..
           "\n請重新登入它（指令已複製到剪貼簿）：\n" .. cmd ..
-          "\n\n錄音已保留，登入後可從 F6 選單重轉",
+          "\n\n錄音已保留，登入後按 F6 →「🔁 補轉」即可救回",
           14
         )
       else
@@ -1331,7 +1388,7 @@ local function transcribeWithGemini(recordingFile, callback)
         stdout_tail = (stdout or ""):sub(-400),
       }, "ERROR")
       if exitCode == 91 then
-        hs.alert.show("⚠️ 錄音太長，超過雲端單次上限\n請改用 F6 選單的本機引擎轉錄", 5)
+        hs.alert.show("⚠️ 錄音太長，超過雲端單次上限\n請按 F6 切換到本機引擎，再用「🔁 補轉」轉這一筆", 5)
         callback(nil, "錄音過長，雲端單次無法處理")
       else
         callback(nil, "Vertex AI 連線失敗: " .. (stderr or ""))
@@ -1961,6 +2018,13 @@ local function cancelTranscription()
     hs.alert.show("🚫 已取消轉錄", 2)
   end
 
+  -- v1.12.0：ESC 也要中止「整批」補轉，否則取消一筆後下一筆立刻又開始跑，
+  -- 使用者會覺得 ESC 沒有用（取消的語意是「停下這件事」，不是「跳過這一筆」）
+  if retranscribeState.running then
+    retranscribeState.running = false
+    hs.alert.show("🚫 已停止批次補轉（錄音全部保留）", 2.5)
+  end
+
   -- 清除狀態
   state.isTranscribing = false
   state.transcribeFile = nil
@@ -1972,6 +2036,20 @@ end
 local function bindCancelHotkey()
   unbindCancelHotkey()  -- 確保不重複綁定
   state.cancelHotkey = hs.hotkey.bind({}, "escape", cancelTranscription)
+end
+
+-- 認證類錯誤（v1.12.0）：重試沒有意義，而且會再等一輪、再彈一次誤導的
+-- 「⚠️ Gemini 暫時故障，重試中…」——明明是沒登入，卻怪到 Gemini 頭上。
+-- 認證問題只有使用者去登入才會好，直接放棄重試把錄音留給補轉。
+local AUTH_ERROR_PATTERNS = {
+  "ADC 未登入", "gcloud 未安裝", "ADC 憑證失效", "Vertex 權限不足", "已擋下未送出",
+}
+local function isAuthError(err)
+  if not err then return false end
+  for _, pattern in ipairs(AUTH_ERROR_PATTERNS) do
+    if err:find(pattern, 1, true) then return true end
+  end
+  return false
 end
 
 -- 主要轉錄函數（Gemini API）
@@ -2034,7 +2112,7 @@ local function transcribe(recordingFile, callback)
       convertToTraditional(text, function(traditionalText)
         callback(traditionalText, nil)
       end)
-    elseif not isRetry and engine == "gemini" then
+    elseif not isRetry and engine == "gemini" and not isAuthError(err) then
       -- Gemini：第一次失敗 retry 一次
       print("[波特槌] Gemini 第一次失敗: " .. (err or "未知錯誤") .. "，重試一次...")
       cloudLog("transcribe_retry", {
@@ -2060,7 +2138,8 @@ local function transcribe(recordingFile, callback)
         outer_latency_s = hs.timer.secondsSinceEpoch() - _outerStartEpoch,
         engine = engine,
       }, "ERROR")
-      hs.alert.show("❌ 轉錄失敗\n錄音已保留: " .. recordingFile:match("([^/]+)$"), 3)
+      hs.alert.show("❌ 轉錄失敗\n錄音已保留: " .. recordingFile:match("([^/]+)$") ..
+        "\n處理好之後按 F6 →「🔁 補轉」即可救回", 4)
       callback(nil, (engine == "lwm" and "本機轉錄失敗" or "Gemini 轉錄失敗（含重試）"))
     end
   end
@@ -2103,6 +2182,206 @@ local function pasteText(text)
 end
 
 -- ========================================
+-- v1.12.0: 補轉未完成的錄音（Re-transcribe）
+-- ========================================
+-- 為什麼需要：轉錄失敗（最常見＝ADC 沒登入）時錄音檔會保留，但在 v1.11.5 以前
+-- 「保留」之後就沒有下一步了——F6 的錄音清單只能在 Finder 裡指給你看。
+-- v1.11.4 的彈窗甚至寫著「登入後可從 F6 選單重轉」，但那個功能當時並不存在。
+-- 講過的話回不來，這裡把那句承諾補成真的。
+--
+-- ⚠️ 鐵律：補轉「絕不自動貼上」（跟一般錄音流程最大的不同）
+--   錄完當下 pasteText 是對的——游標就在你要貼的地方。
+--   但補轉是事後行為，時空已經錯位：使用者此刻可能人在 Terminal、聊天室、
+--   或正在編輯的文件上。自動貼上輕則污染文件、誤送訊息，
+--   重則在 Terminal 裡被當成指令直接執行。
+--   所以補轉一律只 setContents 進剪貼簿並明講，要不要貼由使用者按 ⌘V 決定。
+
+-- 補轉單筆（SRP：只負責一筆的完整生命週期，批次由 retranscribeAllPending 組合）
+local function retranscribeEntry(entry, onDone)
+  onDone = onDone or function() end
+
+  if state.isRecording or state.isTranscribing then
+    hs.alert.show("⏳ 正在錄音／轉錄中，請結束後再補轉", 2)
+    onDone(false, "busy")
+    return
+  end
+
+  local filePath = entry and entry.filePath
+  if not filePath or not hs.fs.attributes(filePath) then
+    hs.alert.show("❌ 找不到錄音檔，無法補轉", 2.5)
+    onDone(false, "file_missing")
+    return
+  end
+
+  local filename = filePath:match("([^/]+)$") or filePath
+  local engine = hs.settings.get("botrun.engine") or "gemini"
+  print("[波特槌][retrans] 開始補轉 " .. filename .. "（engine=" .. engine .. "）")
+  cloudLog("retranscribe_start", {
+    file_basename = filename,
+    prev_status = entry.status or "done",
+    engine = engine,
+  })
+
+  -- 先標記為轉錄中（保留舊文字：重轉已完成的那筆若失敗，原文字不該被抹掉）
+  updateHistoryEntry(filePath, entry.text, "transcribing")
+
+  transcribe(filePath, function(text, err)
+    print("[波特槌][retrans] 回呼 " .. filename .. " → " ..
+      (text and ("成功 " .. #text .. " bytes") or ("失敗：" .. tostring(err))))
+    if text then
+      updateHistoryEntry(filePath, text, "done")
+      hs.pasteboard.setContents(text)   -- ⚠️ 只複製，不貼上（見上方鐵律）
+      cloudLog("retranscribe_done", { file_basename = filename, text_length = #text, engine = engine })
+      hs.alert.show("✅ 補轉完成，文字已複製到剪貼簿\n請按 ⌘V 貼到你要的地方", 3.5)
+      onDone(true, nil)
+    else
+      -- 失敗回復原狀態（失敗的仍是 failed，重轉已完成的那筆則保住原本的 done）
+      local revert = (entry.text and entry.text ~= "") and "done" or "failed"
+      updateHistoryEntry(filePath, entry.text, revert)
+      cloudLog("retranscribe_failed", {
+        file_basename = filename, last_error = err or "unknown", engine = engine,
+      }, "ERROR")
+      -- 這裡「刻意不再彈一次錯誤」：transcribe() 內部各分支已針對原因給了引導彈窗
+      -- （401/403/身分不符各有各的處理方式），再疊一層只會洗版並蓋掉真正有用的那則
+      onDone(false, err or "unknown")
+    end
+  end)
+end
+
+-- 批次補轉：序列執行（一次一筆），連續失敗 2 筆即中止
+local function retranscribeAllPending()
+  if retranscribeState.running then
+    hs.alert.show("⏳ 批次補轉進行中…（ESC 可停止）", 2)
+    return
+  end
+
+  local pending = listPendingEntries()
+  if #pending == 0 then
+    hs.alert.show("✅ 沒有待補轉的錄音", 1.5)
+    return
+  end
+
+  retranscribeState.running = true
+  retranscribeState.queue = pending
+  retranscribeState.index = 0
+  retranscribeState.okCount = 0
+  retranscribeState.failCount = 0
+  retranscribeState.consecutiveFails = 0
+  retranscribeState.inFlight = false
+  retranscribeState.idleTicks = 0
+  retranscribeState.token = (retranscribeState.token or 0) + 1
+  retranscribeState.currentEntry = nil
+
+  local total = #pending
+  cloudLog("retranscribe_batch_start", { pending_count = total })
+
+  local function stopSupervisor()
+    if retranscribeState.supervisor then
+      retranscribeState.supervisor:stop()
+      retranscribeState.supervisor = nil
+    end
+  end
+
+  local function endBatch(alertText, severity, event)
+    retranscribeState.running = false
+    retranscribeState.inFlight = false
+    retranscribeState.timer = nil
+    stopSupervisor()
+    cloudLog(event, {
+      done_count = retranscribeState.index,
+      ok_count = retranscribeState.okCount,
+      fail_count = retranscribeState.failCount,
+    }, severity)
+    hs.alert.show(alertText, 5)
+  end
+
+  local step  -- 前向宣告：advance 會回頭呼叫它
+
+  -- 一筆結束後的推進（成功、失敗、或被監督者判定失聯，統一走這裡）
+  local function advance(ok, myToken)
+    if not retranscribeState.running then return end
+    -- 遲到的回呼：該筆已被監督者判定失聯並推進過了，這裡必須忽略，
+    -- 否則會重複計數並讓兩條鏈同時往前跑
+    if myToken ~= retranscribeState.token then return end
+    retranscribeState.token = retranscribeState.token + 1
+    retranscribeState.inFlight = false
+    retranscribeState.currentEntry = nil
+
+    if ok then
+      retranscribeState.okCount = retranscribeState.okCount + 1
+      retranscribeState.consecutiveFails = 0
+    else
+      retranscribeState.failCount = retranscribeState.failCount + 1
+      retranscribeState.consecutiveFails = retranscribeState.consecutiveFails + 1
+    end
+
+    -- Fail-fast：連續失敗多半是同一個共同原因（沒登入／沒網路／daemon 掛了），
+    -- 繼續硬轉只會把同一個錯誤彈窗洗版 N 次，還白花雲端費用
+    if retranscribeState.consecutiveFails >= 2 and retranscribeState.index < total then
+      endBatch("⏸ 連續失敗 2 筆，已停止批次補轉\n" ..
+        "多半是同一個原因（登入／網路／引擎），\n處理好再按 F6 續轉即可。錄音全部保留。",
+        "WARNING", "retranscribe_batch_aborted")
+      return
+    end
+
+    -- 序列：不並行打爆 Vertex／本機 daemon。timer 存進 state 保持強引用
+    retranscribeState.timer = hs.timer.doAfter(0.8, step)
+  end
+
+  step = function()
+    if not retranscribeState.running then return end  -- 已被 ESC 中止
+
+    retranscribeState.index = retranscribeState.index + 1
+    local i = retranscribeState.index
+
+    if i > total then
+      endBatch(string.format("🔁 補轉結束：成功 %d 筆、失敗 %d 筆%s",
+        retranscribeState.okCount, retranscribeState.failCount,
+        retranscribeState.okCount > 0 and "\n最後一筆的文字在剪貼簿（⌘V 貼上）" or ""),
+        nil, "retranscribe_batch_done")
+      return
+    end
+
+    local entry = retranscribeState.queue[i]
+    hs.alert.show(string.format("🔁 補轉中 %d/%d…（ESC 可停止）", i, total), 1.5)
+    retranscribeState.inFlight = true
+    retranscribeState.idleTicks = 0
+    retranscribeState.currentEntry = entry
+    local myToken = retranscribeState.token
+    retranscribeEntry(entry, function(ok) advance(ok, myToken) end)
+  end
+
+  -- ── 監督者（v1.12.0，實測後補上的防呆）──────────────────────────
+  -- 為什麼需要：非同步回呼在極少數情況下會遺失（本機實測 7 次批次出現 2 次：
+  -- 轉錄明明已經結束、ESC 熱鍵都解綁了，補轉的回呼卻再也沒回來）。
+  -- 沒有監督者的話 running 會永遠卡在 true，之後按 F6 只會看到「進行中…」，
+  -- 整個補轉功能從此按不動——這比少轉一筆嚴重得多，所以寧可誤判也要保證會結束。
+  -- 判準：這一筆還在飛(inFlight)、但已經沒有任何轉錄在進行(isTranscribing=false)，
+  -- 連續 3 次（約 15 秒）都這樣 → 判定失聯，記為失敗並往下一筆。
+  retranscribeState.supervisor = hs.timer.doEvery(5, function()
+    if not retranscribeState.running then stopSupervisor() return end
+    if not retranscribeState.inFlight then return end
+    if state.isTranscribing then retranscribeState.idleTicks = 0 return end
+
+    retranscribeState.idleTicks = retranscribeState.idleTicks + 1
+    if retranscribeState.idleTicks < 3 then return end
+
+    local lost = retranscribeState.currentEntry
+    local lostName = lost and lost.filePath and (lost.filePath:match("([^/]+)$") or "?") or "?"
+    print("[波特槌][retrans] 第 " .. retranscribeState.index .. " 筆回呼失聯（" ..
+      lostName .. "），判定失敗並繼續下一筆")
+    cloudLog("retranscribe_item_lost", { file_basename = lostName, index = retranscribeState.index }, "WARNING")
+    -- 別讓它卡在 transcribing：狀態退回去，使用者之後還能再補轉這一筆
+    if lost and lost.filePath then
+      updateHistoryEntry(lost.filePath, lost.text, (lost.text and lost.text ~= "") and "done" or "failed")
+    end
+    advance(false, retranscribeState.token)
+  end)
+
+  step()
+end
+
+-- ========================================
 -- 歷史紀錄選單（ISP: 文字與檔案分離為獨立介面）
 -- ========================================
 
@@ -2116,18 +2395,45 @@ end)
 textChooser:placeholderText("搜尋轉錄歷史...")
 textChooser:searchSubText(true)
 
--- 檔案歷史選單 (F7)：選擇後在 Finder 顯示
-local fileChooser = hs.chooser.new(function(choice)
-  if not choice then return end
-  if choice.filePath and hs.fs.attributes(choice.filePath) then
-    hs.task.new("/usr/bin/open", nil, {"-R", choice.filePath}):start()
-  else
+-- 檔案歷史選單：v1.12.0 起依狀態分流
+--   · 未完成（🔁）→ 選中即補轉：這才是使用者打開這張清單的真正目的
+--   · 已完成（✅）→ 維持在 Finder 顯示，不破壞既有肌肉記憶
+--     （想重轉已完成的那筆＝換引擎再轉一次 → 用右鍵，對齊 Superwhisper「Process Again」）
+local fileChooser
+local function fileChooserAct(choice, forceRetranscribe)
+  if not choice or not choice.filePath then return end
+  if not hs.fs.attributes(choice.filePath) then
     hs.alert.show("❌ 檔案不存在", 2)
+    return
   end
+  -- 狀態一律回 history 現查（SSOT），不信任 UI 元件裡的副本
+  local entry = findHistoryEntry(choice.filePath)
+  if entry and (forceRetranscribe or isPendingEntry(entry)) then
+    retranscribeEntry(entry)
+  else
+    hs.task.new("/usr/bin/open", nil, {"-R", choice.filePath}):start()
+  end
+end
+
+fileChooser = hs.chooser.new(function(choice)
+  fileChooserAct(choice, false)
 end)
 
-fileChooser:placeholderText("搜尋錄音檔案...")
+fileChooser:placeholderText("搜尋錄音檔案（🔁 選中即補轉）...")
 fileChooser:searchSubText(true)
+
+-- 右鍵 = Process Again（連已完成的也能用目前引擎重轉）
+-- 用 pcall 包住：舊版 Hammerspoon 若無此 API，只是少一條捷徑，不該讓整個腳本掛掉
+pcall(function()
+  fileChooser:rightClickCallback(function(row)
+    if not row or row < 1 then return end
+    local ok, choice = pcall(function() return fileChooser:selectedRowContents(row) end)
+    if ok and choice then
+      fileChooser:hide()
+      fileChooserAct(choice, true)
+    end
+  end)
+end)
 
 -- 顯示文字歷史（DRY: 共用 loadHistory）
 local function showTextHistory()
@@ -2155,14 +2461,21 @@ local function showFileHistory()
   for _, entry in ipairs(history) do
     if entry.filePath then
       local filename = entry.filePath:match("([^/]+)$") or entry.filePath
-      local statusIcon = (entry.status == "failed" and "⚠️")
+      local exists = hs.fs.attributes(entry.filePath) ~= nil
+      local pending = isPendingEntry(entry)
+      -- v1.12.0：🔁 ＝「選我就會補轉」（圖示直接說明動作，不用另外教）
+      local statusIcon = pending and "🔁"
+        or (not exists and "❌")
+        or (entry.status == "failed" and "⚠️")
         or (entry.status == "cancelled" and "🚫")
         or (entry.status == "transcribing" and "⏳")
-        or (hs.fs.attributes(entry.filePath) and "✅" or "❌")
+        or "✅"
+      local hint = pending and "點選即補轉"
+        or (exists and "點選在 Finder 顯示（右鍵可重轉）" or "音檔已不存在")
       local preview = truncateText(entry.text, 50)
       table.insert(choices, {
         text = statusIcon .. " " .. filename,
-        subText = entry.timestamp .. " | " .. preview,
+        subText = entry.timestamp .. " · " .. hint .. ((preview ~= "" and preview ~= nil) and (" | " .. preview) or ""),
         filePath = entry.filePath,
       })
     end
@@ -2212,6 +2525,16 @@ local function toggleRecording()
         updateHistoryEntry(recordingFile, text, "done")
         pasteText(text)
         hs.alert.show("✅ 完成！", 1)
+        -- v1.12.0：這一刻身分／網路／引擎剛剛被證明是好的，是補轉成功率最高的時機。
+        -- 失敗當下人在處理登入，不會記得回頭救舊錄音——由系統替他記得。
+        local pendingCount = #listPendingEntries()
+        if pendingCount > 0 then
+          hs.timer.doAfter(1.5, function()
+            hs.alert.show(string.format(
+              "🔁 還有 %d 筆錄音沒轉成功\n按 F6 →「補轉 %d 筆未完成錄音」即可救回",
+              pendingCount, pendingCount), 4)
+          end)
+        end
       else
         updateHistoryEntry(recordingFile, nil, "failed")
         hs.alert.show("轉譯失敗: " .. (err or "未知錯誤"), 3)
@@ -2375,14 +2698,25 @@ end
 local function buildEngineMenu()
   local engine = hs.settings.get("botrun.engine") or "gemini"
   local currentModel = hs.settings.get("botrun.lwm.model") or config.lwm.defaultModel
-  local items = {
-    {
-      title = "☁️ Gemini (雲端)",
-      checked = engine == "gemini",
-      fn = setEngineGemini,
-    },
-    { title = "-" },
-  }
+  local items = {}
+
+  -- v1.12.0：待補轉錄音置頂——失敗後使用者被引導來按 F6，第一眼就要看到救援入口。
+  -- 零狀態時「不顯示」（v1.7.14 教訓：多餘的按鈕反過來暗示系統不可靠）
+  local pendingCount = #listPendingEntries()
+  if pendingCount > 0 then
+    table.insert(items, {
+      title = string.format("🔁 補轉 %d 筆未完成錄音…", pendingCount),
+      fn = function() retranscribeAllPending() end,
+    })
+    table.insert(items, { title = "-" })
+  end
+
+  table.insert(items, {
+    title = "☁️ Gemini (雲端)",
+    checked = engine == "gemini",
+    fn = setEngineGemini,
+  })
+  table.insert(items, { title = "-" })
   for _, m in ipairs(config.lwm.menuModels) do
     table.insert(items, {
       title = m.label,
@@ -2421,6 +2755,44 @@ _G.botrunHammer.reinstallLwm = function()
     print("[botrunHammer.reinstallLwm] ok=" .. tostring(ok))
   end)
   return "installing…"
+end
+
+-- v1.12.0：補轉相關 debug／E2E API（scripts/test_retranscribe.sh 用 `hs -c` 驅動）
+_G.botrunHammer.pendingCount = function() return #listPendingEntries() end
+_G.botrunHammer.listPending = function()
+  local lines = {}
+  for _, e in ipairs(listPendingEntries()) do
+    table.insert(lines, (e.status or "?") .. "\t" .. e.filePath)
+  end
+  return table.concat(lines, "\n")
+end
+_G.botrunHammer.retranscribe = function(filePath)
+  local entry = findHistoryEntry(filePath)
+  if not entry then return "not_found_in_history" end
+  retranscribeEntry(entry)
+  return "started"
+end
+_G.botrunHammer.retranscribeAll = function()
+  retranscribeAllPending()
+  return "started"
+end
+_G.botrunHammer.isRetranscribing = function() return retranscribeState.running end
+_G.botrunHammer.retranscribeStatus = function()
+  return string.format("running=%s index=%d total=%d ok=%d fail=%d consecutiveFails=%d",
+    tostring(retranscribeState.running), retranscribeState.index,
+    #retranscribeState.queue, retranscribeState.okCount,
+    retranscribeState.failCount, retranscribeState.consecutiveFails)
+end
+-- E2E 專用：讓 scripts/test_retranscribe.sh 能造出「歷史已滿 + 有待補轉」的情境
+-- 來驗 FIFO 保護（S3）。直接寫 history.json 驗不到淘汰邏輯，必須走真正的 addToHistory。
+_G.botrunHammer.addHistory = function(text, filePath, status)
+  addToHistory(text, filePath, status)
+  return "added"
+end
+_G.botrunHammer.historyStatusOf = function(filePath)
+  local e = findHistoryEntry(filePath)
+  if not e then return "NOT_IN_HISTORY" end
+  return (e.status or "done") .. "\t" .. tostring(e.text and #e.text or 0)
 end
 
 -- v1.7.15: 不常駐 menubar（避免上方 bar 干擾），F6 統一選單彈出；選完即關
