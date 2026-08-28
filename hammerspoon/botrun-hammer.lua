@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.12.0 - Mac 語音轉文字
+  🔨 波特槌 v1.13.0 - Mac 語音轉文字
 
   由 Vertex AI Gemini（gcloud ADC 認證）驅動的語音輸入助手
 
@@ -27,7 +27,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.12.0"
+local VERSION = "1.13.0"
 
 -- 開機自動啟動 Hammerspoon（v1.7.11）
 pcall(function() hs.autoLaunch(true) end)
@@ -178,9 +178,12 @@ local function getEnvKey(keyName)
   end
 
   -- 嘗試讀取 .env 檔案
-  local envPaths = {
-    os.getenv("HOME") .. "/.botrun-hammer/.env",
-  }
+  -- v1.13.0：優先找目前執行中的 lua 檔（SCRIPT_PATH）同一層目錄的 .env，
+  -- 讓 repo checkout／自訂部署位置都能就地放 .env，不強制集中在 ~/.botrun-hammer/
+  local envPaths = {}
+  local scriptDir = SCRIPT_PATH and SCRIPT_PATH:match("^(.*/)")
+  if scriptDir then table.insert(envPaths, scriptDir .. ".env") end
+  table.insert(envPaths, os.getenv("HOME") .. "/.botrun-hammer/.env")
 
   for _, path in ipairs(envPaths) do
     local file = io.open(path, "r")
@@ -227,6 +230,13 @@ local function getVertexLocation()
   local l = getEnvKey("VERTEX_LOCATION")
   if l and l ~= "" then return l end
   return config.vertex.location
+end
+
+-- Gemini 模型（v1.13.0）：.env 的 VERTEX_MODEL 優先，否則用預設 config.geminiModel
+local function getGeminiModel()
+  local m = getEnvKey("VERTEX_MODEL")
+  if m and m ~= "" then return m end
+  return config.geminiModel
 end
 
 -- 授權網域（v1.11.3）：.env 的 VERTEX_ALLOWED_DOMAIN 優先
@@ -1152,7 +1162,7 @@ local function transcribeWithGemini(recordingFile, callback)
   cloudLog("transcribe_request_start", {
     file_basename = basename,
     file_size = _fileSize,
-    model = config.geminiModel,
+    model = getGeminiModel(),
     auth = "adc",
     vertex_project = project,
     vertex_location = location,
@@ -1310,7 +1320,7 @@ local function transcribeWithGemini(recordingFile, callback)
   ]],
     shellQuote(gcloudPath), shellQuote(ffmpegPath), shellQuote(jqPath),
     shellQuote(recordingFile), shellQuote(project), shellQuote(location),
-    shellQuote(config.geminiModel), shellQuote(config.vertex.host),
+    shellQuote(getGeminiModel()), shellQuote(config.vertex.host),
     config.vertex.maxUploadBytes,
     shellQuote(allowedDomain), shellQuote((allowedDomain:gsub("%.", "\\."))))
 
