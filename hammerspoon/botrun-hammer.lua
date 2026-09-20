@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.13.0 - Mac 語音轉文字
+  🔨 波特槌 v1.14.0 - Mac 語音轉文字
 
   由 Vertex AI Gemini（gcloud ADC 認證）驅動的語音輸入助手
 
@@ -13,6 +13,8 @@
   - 補轉未完成錄音（v1.12.0）：轉錄失敗／取消的錄音會留在 F6 清單，
     登入或修好環境後按 F6 →「🔁 補轉 N 筆未完成錄音」一鍵救回
     （補轉結果只進剪貼簿、不自動貼上——事後補轉時游標可能在任何地方）
+  - 清除待補轉錄音（v1.14.0）：F6 選單提供清除未完成錄音能力，
+    放棄不需要補轉的錄音（音檔仍保留在 Finder，不擅自刪除）
   - 自動更新：啟動時及每 4 小時檢查 GitHub 最新版本
 
   安裝：
@@ -27,7 +29,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.13.0"
+local VERSION = "1.14.0"
 
 -- 開機自動啟動 Hammerspoon（v1.7.11）
 pcall(function() hs.autoLaunch(true) end)
@@ -2392,6 +2394,78 @@ local function retranscribeAllPending()
 end
 
 -- ========================================
+-- v1.14.0: 清除待補轉錄音（Clear Pending Retranscriptions）
+-- ========================================
+-- 為什麼需要：使用者取消、測試、雜音、或錄完當下失敗但在下一次錄音已重新講過的話，
+-- 這些未完成錄音會永遠留在待補轉清單中（受 FIFO 保護不會被沖掉），
+-- 導致 F6 選單永遠出現「🔁 補轉 N 筆…」，且每次正常錄音成功後都會彈窗提醒。
+-- 提供清除能力，讓使用者能主動放棄不需要補轉的錄音。
+--
+-- ⚠️ 設計原則：
+--   1. 標記 status = "cleared"，不再列入待補轉（isPendingEntry 依 PENDING_STATUS 判斷，cleared 自動排除）
+--   2. 音檔「絕不擅自刪除」（安全第一，保留在 Finder 中，若反悔右鍵仍可重轉）
+--   3. 零狀態時選單完全隱藏（不打擾）
+--   4. 正在跑的批次補轉若包含被清除項，安全終止
+
+-- 清除單筆待補轉紀錄
+local function clearPendingEntry(filePath)
+  if not filePath then return false end
+  local entry = findHistoryEntry(filePath)
+  if not entry then return false end
+
+  -- 若批次補轉正在跑且正好是這一筆，停止批次
+  if retranscribeState.running then
+    if retranscribeState.currentEntry and retranscribeState.currentEntry.filePath == filePath then
+      retranscribeState.running = false
+      if retranscribeState.supervisor then
+        retranscribeState.supervisor:stop()
+        retranscribeState.supervisor = nil
+      end
+    end
+  end
+
+  updateHistoryEntry(filePath, entry.text, "cleared")
+  local filename = filePath:match("([^/]+)$") or filePath
+  cloudLog("retranscribe_entry_cleared", { file_basename = filename })
+  hs.alert.show("🗑️ 已清除待補轉：\n" .. filename .. "\n（錄音檔仍保留）", 2)
+  return true
+end
+
+-- 清除所有待補轉紀錄
+local function clearAllPending()
+  local pending = listPendingEntries()
+  if #pending == 0 then
+    hs.alert.show("✅ 沒有待補轉的錄音", 1.5)
+    return 0
+  end
+
+  -- 若批次補轉正在跑，安全終止
+  if retranscribeState.running then
+    retranscribeState.running = false
+    if retranscribeState.supervisor then
+      retranscribeState.supervisor:stop()
+      retranscribeState.supervisor = nil
+    end
+  end
+
+  local history = loadHistory()
+  local count = 0
+  for _, entry in ipairs(history) do
+    if isPendingEntry(entry) or (PENDING_STATUS[entry.status] and not hs.fs.attributes(entry.filePath or "")) then
+      entry.status = "cleared"
+      count = count + 1
+    end
+  end
+  if count > 0 then
+    saveHistory(history)
+  end
+
+  cloudLog("retranscribe_cleared_all", { cleared_count = count })
+  hs.alert.show(string.format("🗑️ 已清除 %d 筆未完成錄音\n（錄音檔仍保留）", count), 2)
+  return count
+end
+
+-- ========================================
 -- 歷史紀錄選單（ISP: 文字與檔案分離為獨立介面）
 -- ========================================
 
@@ -2474,13 +2548,16 @@ local function showFileHistory()
       local exists = hs.fs.attributes(entry.filePath) ~= nil
       local pending = isPendingEntry(entry)
       -- v1.12.0：🔁 ＝「選我就會補轉」（圖示直接說明動作，不用另外教）
+      -- v1.14.0：🗑️ ＝「已清除待補轉」（音檔仍在，可點選在 Finder 顯示或右鍵重轉）
       local statusIcon = pending and "🔁"
         or (not exists and "❌")
+        or (entry.status == "cleared" and "🗑️")
         or (entry.status == "failed" and "⚠️")
         or (entry.status == "cancelled" and "🚫")
         or (entry.status == "transcribing" and "⏳")
         or "✅"
       local hint = pending and "點選即補轉"
+        or (entry.status == "cleared" and (exists and "已清除待補轉（點選在 Finder 顯示，右鍵可重轉）" or "音檔已不存在"))
         or (exists and "點選在 Finder 顯示（右鍵可重轉）" or "音檔已不存在")
       local preview = truncateText(entry.text, 50)
       table.insert(choices, {
@@ -2711,13 +2788,39 @@ local function buildEngineMenu()
   local items = {}
 
   -- v1.12.0：待補轉錄音置頂——失敗後使用者被引導來按 F6，第一眼就要看到救援入口。
-  -- 零狀態時「不顯示」（v1.7.14 教訓：多餘的按鈕反過來暗示系統不可靠）
-  local pendingCount = #listPendingEntries()
+  -- v1.14.0：清除待補轉能力——零狀態時「不顯示」（多餘的按鈕反過來暗示系統不可靠）
+  local pendingList = listPendingEntries()
+  local pendingCount = #pendingList
   if pendingCount > 0 then
     table.insert(items, {
       title = string.format("🔁 補轉 %d 筆未完成錄音…", pendingCount),
       fn = function() retranscribeAllPending() end,
     })
+    if pendingCount == 1 then
+      table.insert(items, {
+        title = "🗑️ 清除 1 筆未完成錄音",
+        fn = function() clearAllPending() end,
+      })
+    else
+      local clearSubmenu = {
+        {
+          title = string.format("🗑️ 全部清除 (共 %d 筆)", pendingCount),
+          fn = function() clearAllPending() end,
+        },
+        { title = "-" },
+      }
+      for _, entry in ipairs(pendingList) do
+        local name = entry.filePath and (entry.filePath:match("([^/]+)$") or entry.filePath) or "未命名"
+        table.insert(clearSubmenu, {
+          title = "清除 " .. name,
+          fn = function() clearPendingEntry(entry.filePath) end,
+        })
+      end
+      table.insert(items, {
+        title = string.format("🗑️ 清除未完成錄音 (%d 筆)…", pendingCount),
+        menu = clearSubmenu,
+      })
+    end
     table.insert(items, { title = "-" })
   end
 
@@ -2792,6 +2895,19 @@ _G.botrunHammer.retranscribeStatus = function()
     tostring(retranscribeState.running), retranscribeState.index,
     #retranscribeState.queue, retranscribeState.okCount,
     retranscribeState.failCount, retranscribeState.consecutiveFails)
+end
+-- v1.14.0：清除待補轉 API
+_G.botrunHammer.clearPending = function(filePath)
+  return clearPendingEntry(filePath) and "cleared" or "not_found"
+end
+_G.botrunHammer.clearAllPending = function()
+  return clearAllPending()
+end
+_G.botrunHammer.getMenuItems = function()
+  return buildEngineMenu()
+end
+_G.botrunHammer.version = function()
+  return VERSION
 end
 -- E2E 專用：讓 scripts/test_retranscribe.sh 能造出「歷史已滿 + 有待補轉」的情境
 -- 來驗 FIFO 保護（S3）。直接寫 history.json 驗不到淘汰邏輯，必須走真正的 addToHistory。

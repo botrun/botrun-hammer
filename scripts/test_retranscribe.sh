@@ -51,10 +51,12 @@ command -v hs >/dev/null || { echo "FAIL: 找不到 hs CLI（Hammerspoon → Ena
 VER=$(hsc 'print(_G.botrunHammer and "has-api" or "no-api")')
 [ "$VER" = "has-api" ] || { echo "FAIL: Hammerspoon 未載入波特槌，或版本過舊（缺 _G.botrunHammer）"; exit 1; }
 HAS_PENDING_API=$(hsc 'print(_G.botrunHammer.pendingCount and "yes" or "no")')
-[ "$HAS_PENDING_API" = "yes" ] || { echo "FAIL: 目前載入的是舊版（無 pendingCount）——請先部署 v1.12.0 再測"; exit 1; }
+[ "$HAS_PENDING_API" = "yes" ] || { echo "FAIL: 目前載入的是舊版（無 pendingCount）——請先部署 v1.12.0+ 再測"; exit 1; }
+HAS_CLEAR_API=$(hsc 'print(_G.botrunHammer.clearAllPending and "yes" or "no")')
+[ "$HAS_CLEAR_API" = "yes" ] || { echo "FAIL: 目前載入的是舊版（無 clearAllPending）——請先部署 v1.14.0 再測"; exit 1; }
 BUSY=$(hsc 'print(tostring(botrunHammerIsBusy()))')
 [ "$BUSY" = "false" ] || { echo "FAIL: 正在錄音／轉錄中，請結束後再測"; exit 1; }
-info "hs CLI OK、波特槌 v1.12.0 API 就緒"
+info "hs CLI OK、波特槌 v1.14.0 API 就緒"
 
 cp "$HISTORY" "$BACKUP" 2>/dev/null && info "history.json 已備份到 $BACKUP"
 
@@ -193,10 +195,61 @@ grep -q 'retranscribeState.supervisor = hs.timer.doEvery' "$LUA_FILE" \
   && ok "靜態：批次監督者已就位（回呼失聯時強制推進）" || bad "靜態：找不到批次監督者"
 
 echo
-echo "=== S6/S7: 靜態檢查（UI 互動需真人操作）==="
+echo "=== S9: 單筆清除待補轉（clearPending）==="
+hsc "_G.botrunHammer.addHistory(nil, '$AUDIO_A', 'failed')" >/dev/null
+hsc "_G.botrunHammer.addHistory(nil, '$AUDIO_B', 'failed')" >/dev/null
+N_BEFORE=$(hsc 'print(_G.botrunHammer.pendingCount())')
+hsc "print(_G.botrunHammer.clearPending('$AUDIO_A'))" >/dev/null
+N_AFTER=$(hsc 'print(_G.botrunHammer.pendingCount())')
+if [ "$N_AFTER" = "$((N_BEFORE-1))" ]; then ok "單筆清除後 pending 數減 1（${N_BEFORE} → ${N_AFTER}）"
+else bad "單筆清除後 pending 數不對（期望 $((N_BEFORE-1))，實得 ${N_AFTER}）"; fi
+
+ST_A=$(hsc "print(_G.botrunHammer.historyStatusOf('$AUDIO_A'))" | cut -f1)
+ST_B=$(hsc "print(_G.botrunHammer.historyStatusOf('$AUDIO_B'))" | cut -f1)
+if [ "$ST_A" = "cleared" ] && [ "$ST_B" = "failed" ]; then ok "A 狀態變 cleared，B 仍為 failed"
+else bad "狀態不符期望（A=${ST_A} B=${ST_B}）"; fi
+[ -f "$AUDIO_A" ] && ok "音檔 A 依然完整保留在硬碟（未擅自刪除）" || bad "音檔 A 遭刪除"
+
+echo
+echo "=== S10: 全部清除待補轉與選單呈現（clearAllPending）==="
+CLEARED_N=$(hsc 'print(_G.botrunHammer.clearAllPending())')
+N_FINAL=$(hsc 'print(_G.botrunHammer.pendingCount())')
+if [ "$N_FINAL" = "0" ]; then ok "全部清除後 pending 數歸零（實得 ${N_FINAL}）"
+else bad "全部清除後 pending 應為 0，實得 ${N_FINAL}）"; fi
+
+ST_B2=$(hsc "print(_G.botrunHammer.historyStatusOf('$AUDIO_B'))" | cut -f1)
+if [ "$ST_B2" = "cleared" ]; then ok "B 狀態也變為 cleared"
+else bad "B 狀態應為 cleared，實得 ${ST_B2}）"; fi
+[ -f "$AUDIO_B" ] && ok "音檔 B 依然完整保留在硬碟（未擅自刪除）" || bad "音檔 B 遭刪除"
+
+# 驗證零狀態下選單不包含補轉與清除
+MENU_TITLES=$(hsc 'local t={} for _,it in ipairs(_G.botrunHammer.getMenuItems()) do table.insert(t, it.title) end print(table.concat(t, " || "))')
+if echo "$MENU_TITLES" | grep -q '補轉'; then bad "零狀態選單仍出現補轉列"; else ok "零狀態選單無補轉列"; fi
+if echo "$MENU_TITLES" | grep -q '清除'; then bad "零狀態選單仍出現清除列"; else ok "零狀態選單無清除列"; fi
+
+# 造出 1 筆時驗證單筆清除選單樣式
+hsc "_G.botrunHammer.addHistory(nil, '$AUDIO_A', 'failed')" >/dev/null
+MENU_1=$(hsc 'local t={} for _,it in ipairs(_G.botrunHammer.getMenuItems()) do table.insert(t, it.title) end print(table.concat(t, " || "))')
+if echo "$MENU_1" | grep -q '🗑️ 清除 1 筆未完成錄音'; then ok "1 筆 pending 時選單顯示直出按鈕「🗑️ 清除 1 筆未完成錄音」"
+else bad "1 筆 pending 時選單樣式不符"; fi
+
+# 造出 2 筆時驗證子選單樣式
+hsc "_G.botrunHammer.addHistory(nil, '$AUDIO_B', 'failed')" >/dev/null
+MENU_2=$(hsc 'local t={} for _,it in ipairs(_G.botrunHammer.getMenuItems()) do if it.menu then table.insert(t, it.title .. " [has-submenu:" .. #it.menu .. "]") else table.insert(t, it.title) end end print(table.concat(t, " || "))')
+if echo "$MENU_2" | grep -q '🗑️ 清除未完成錄音 (2 筆)… \[has-submenu:4\]'; then ok "2 筆 pending 時選單提供子選單（含全部清除與個別檔案選項）"
+else bad "2 筆 pending 時子選單結構不符（${MENU_2}）"; fi
+
+# 清理測試造出的 pending
+hsc '_G.botrunHammer.clearAllPending()' >/dev/null
+
+echo
+echo "=== S6/S7/S11: 靜態檢查（UI 互動需真人操作）==="
 grep -q '還有 %d 筆錄音沒轉成功' "$LUA_FILE" && ok "S6 靜態：轉錄成功後會提醒尚有待補轉" || bad "S6 靜態：找不到成功後提醒"
 grep -q 'rightClickCallback' "$LUA_FILE" && ok "S7 靜態：chooser 已綁右鍵重轉（Process Again）" || bad "S7 靜態：未綁右鍵"
 grep -A2 'hs.pasteboard.setContents(text)   -- ⚠️ 只複製' "$LUA_FILE" | grep -q 'pasteText' && bad "補轉路徑出現 pasteText（違反鐵律）" || ok "靜態：補轉路徑不含 pasteText"
+grep -q 'local function clearAllPending()' "$LUA_FILE" && ok "S11 靜態：clearAllPending 實作就位" || bad "S11 靜態：缺少 clearAllPending"
+grep -q 'local function clearPendingEntry' "$LUA_FILE" && ok "S11 靜態：clearPendingEntry 實作就位" || bad "S11 靜態：缺少 clearPendingEntry"
+grep -q 'local VERSION = "1.14.0"' "$LUA_FILE" && ok "S11 靜態：版本號已推進至 1.14.0" || bad "S11 靜態：版本號未推進"
 
 echo
 echo "================================"
