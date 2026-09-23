@@ -21,7 +21,8 @@ cleanup() {
     [[ -n "$p" ]] && kill -TERM "$p" 2>/dev/null || true
   done
   rm -rf "$TEST_HOME"
-  [[ -n "$EXTRA_HOME" ]] && rm -rf "$EXTRA_HOME"
+  # set -e 底下 trap 最後一行用 `[[ ]] && ...` 失敗會把結束碼改成 1，改用 if
+  if [[ -n "$EXTRA_HOME" ]]; then rm -rf "$EXTRA_HOME"; fi
 }
 trap cleanup EXIT
 

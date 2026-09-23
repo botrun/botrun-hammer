@@ -131,8 +131,8 @@ def log(msg: str) -> None:
 # 預設等於 memory limit（裝置建議工作集的 1.5 倍），等於沒有上限；每次轉錄配的緩衝
 # 用完進快取、從不還給 macOS。加上 WhisperBackend 之前自己多載了一份權重（從未用到）。
 # 修法三件：啟動時設快取上限、每次轉錄後 clear_cache、閒置一段時間卸載模型。
-def _env_int(name: str, default: int, minimum: int = 0) -> int:
-    """讀整數環境變數；不是整數或小於下限就記 log 並退回預設值，絕不讓 daemon 起不來."""
+def _env_int(name: str, default: int, minimum: int = 0, maximum: int | None = None) -> int:
+    """讀整數環境變數；不是整數或超出上下限就記 log 並退回預設值，絕不讓 daemon 起不來."""
     raw = os.environ.get(name)
     if raw is None or raw.strip() == "":
         return default
@@ -144,12 +144,15 @@ def _env_int(name: str, default: int, minimum: int = 0) -> int:
     if val < minimum:
         log(f"[env] {name}={val} 小於下限 {minimum}，改用預設 {default}")
         return default
+    if maximum is not None and val > maximum:
+        log(f"[env] {name}={val} 大於上限 {maximum}，改用預設 {default}")
+        return default
     return val
 
 
 MLX_CACHE_LIMIT_MB = _env_int("LWM_MLX_CACHE_LIMIT_MB", 1024, minimum=0)
 IDLE_UNLOAD_SEC = _env_int("LWM_IDLE_UNLOAD_SEC", 1800, minimum=0)
-IDLE_CHECK_SEC = _env_int("LWM_IDLE_CHECK_SEC", 60, minimum=1)
+IDLE_CHECK_SEC = _env_int("LWM_IDLE_CHECK_SEC", 60, minimum=1, maximum=3600)  # 太大 time.sleep 會 OverflowError
 
 _MX_FAILED = False
 
@@ -386,7 +389,9 @@ class BreezeBackend(Backend):
         self._key = None
         if "torch" in sys.modules:
             try:
+                import gc
                 import torch
+                gc.collect()  # pipeline 可能有循環參照，先回收張量再清 MPS 快取才有效
                 if torch.backends.mps.is_available():
                     torch.mps.empty_cache()
             except Exception as exc:
@@ -495,7 +500,14 @@ class BackendCache:
             gc.collect()
             mlx_clear_cache()
             backend = self._pick(model_name)
-        repo = backend.load(model_name)
+        try:
+            repo = backend.load(model_name)
+        except Exception:
+            # 載入失敗就不要留著舊的 _current／_current_model，否則 /health 會顯示一個其實沒載入的模型
+            self._current = None
+            self._current_model = None
+            mlx_clear_cache()
+            raise
         mlx_clear_cache()  # 載入過程的暫存緩衝不留在快取
         self._current = backend
         self._current_model = model_name
@@ -523,7 +535,7 @@ class BackendCache:
         log(f"unload done: {mlx_memory_mb()}")
 
     def unload_if_idle(self, idle_sec: int) -> bool:
-        """v1.11.1: 超過 idle_sec 沒轉錄就卸載；回傳有沒有真的卸載。由 main 的看門執行緒每分鐘呼叫."""
+        """v1.11.1: 超過 idle_sec 沒轉錄就卸載；回傳有沒有真的卸載。由 main 的看門執行緒每 LWM_IDLE_CHECK_SEC 秒呼叫."""
         with self._lock:
             if self._current is None or self._last_used is None:
                 return False
@@ -739,11 +751,12 @@ def main() -> int:
     if IDLE_UNLOAD_SEC > 0:
         def idle_watch() -> None:
             while True:
-                time.sleep(IDLE_CHECK_SEC)
                 try:
+                    time.sleep(IDLE_CHECK_SEC)
                     cache.unload_if_idle(IDLE_UNLOAD_SEC)
                 except Exception as exc:
                     log(f"idle-unload error: {exc!r}")
+                    time.sleep(60)  # 連 sleep 都出錯就退一步，避免緊迴圈洗 log
         threading.Thread(target=idle_watch, name="idle-unload", daemon=True).start()
         log(f"idle-unload watch on: unload after {IDLE_UNLOAD_SEC}s idle, check every {IDLE_CHECK_SEC}s")
 
