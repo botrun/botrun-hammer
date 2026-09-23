@@ -49,7 +49,7 @@ PID_FILE = CONFIG_DIR / "lwm.pid"
 LOG_FILE = CONFIG_DIR / "lwm.log"
 
 DEFAULT_PORT_RANGE = range(18120, 18131)
-DAEMON_VERSION = "1.11.0"  # v1.11.0: 加 Breeze-ASR 全精度 backend（whisper + gemma-4 + breeze）
+DAEMON_VERSION = "1.11.1"  # v1.11.1: MLX 快取上限＋轉錄後清快取＋閒置卸載（修 daemon 閒置占 20 GB 不還）
 
 # v1.7.9: 改用 Apple 官方 mlx-whisper（支援 large-v3-turbo，多語）
 HF_REPO_MAP = {
@@ -126,6 +126,50 @@ def log(msg: str) -> None:
         pass
 
 
+# v1.11.1 記憶體地雷（2026-09-23 實測）：daemon 跑 28 天、閒置時 footprint 20.44 GB，
+# Python 自己的 malloc 只有 83 MB，其餘全在 MLX 的緩衝快取。原因是 MLX 的快取上限
+# 預設等於 memory limit（裝置建議工作集的 1.5 倍），等於沒有上限；每次轉錄配的緩衝
+# 用完進快取、從不還給 macOS。加上 WhisperBackend 之前自己多載了一份權重（從未用到）。
+# 修法三件：啟動時設快取上限、每次轉錄後 clear_cache、閒置一段時間卸載模型。
+MLX_CACHE_LIMIT_MB = int(os.environ.get("LWM_MLX_CACHE_LIMIT_MB", "1024"))
+IDLE_UNLOAD_SEC = int(os.environ.get("LWM_IDLE_UNLOAD_SEC", "1800"))
+
+
+def _mx():
+    """懶載入 mlx.core；沒裝 MLX 的環境回 None，不阻擋其他 backend."""
+    try:
+        import mlx.core as mx
+        return mx
+    except ImportError:
+        return None
+
+
+def mlx_set_cache_limit(limit_mb: int) -> None:
+    mx = _mx()
+    if mx is None:
+        return
+    prev = mx.set_cache_limit(limit_mb * 1024 * 1024)
+    log(f"[mlx] cache limit {prev / 2**30:.1f} GB -> {limit_mb} MB")
+
+
+def mlx_clear_cache() -> None:
+    mx = _mx()
+    if mx is not None:
+        mx.clear_cache()
+
+
+def mlx_memory_mb() -> dict:
+    """給 /health 看的 MLX 記憶體數字（MB），方便量測與回報。"""
+    mx = _mx()
+    if mx is None:
+        return {}
+    return {
+        "mlx_active_mb": round(mx.get_active_memory() / 2**20, 1),
+        "mlx_cache_mb": round(mx.get_cache_memory() / 2**20, 1),
+        "mlx_peak_mb": round(mx.get_peak_memory() / 2**20, 1),
+    }
+
+
 class TranscribeError(Exception):
     """Domain error — 由 backend 拋出，dispatcher 對映 HTTP status."""
     def __init__(self, status: int, msg: str):
@@ -144,13 +188,16 @@ class Backend:
     def transcribe(self, audio_path: str, model_name: str, lang: str | None) -> str:
         raise NotImplementedError
 
+    def unload(self) -> None:
+        """v1.11.1: 釋放這個 backend 持有的權重；預設什麼都不做（重建工廠即丟棄）."""
+        return None
+
 
 class WhisperBackend(Backend):
     """v1.7.9 既有 mlx-whisper 路徑."""
     name = "whisper"
 
     def __init__(self) -> None:
-        self._model = None
         self._key: str | None = None
 
     def _resolve_repo(self, model_name: str) -> str:
@@ -162,15 +209,33 @@ class WhisperBackend(Backend):
 
     def load(self, model_name: str) -> str:
         repo = self._resolve_repo(model_name)
-        if self._key != model_name or self._model is None:
-            from mlx_whisper.load_models import load_model
+        if self._key != model_name:
+            # v1.11.1: 不再自己 load_model 一份。mlx_whisper.transcribe() 內部的 ModelHolder
+            # 會依 repo 載入並持有，之前這裡多載的那份從未被用到，白占一份權重。
+            # 預載／切換模型時直接暖 ModelHolder（與 transcribe() 預設的 fp16 相同，同一份）。
             log(f"[whisper] load {model_name} -> {repo}")
-            self._model = None
             t0 = time.time()
-            self._model = load_model(repo)
-            log(f"[whisper] loaded in {time.time() - t0:.2f}s")
+            try:
+                from mlx_whisper.transcribe import ModelHolder
+                import mlx.core as mx
+                ModelHolder.get_model(repo, mx.float16)
+                log(f"[whisper] loaded in {time.time() - t0:.2f}s")
+            except Exception as exc:
+                log(f"[whisper] warm load skipped ({exc!r}); 第一次轉錄時再載入")
             self._key = model_name
         return repo
+
+    def unload(self) -> None:
+        # v1.11.1: 權重在 mlx_whisper 的 ModelHolder 裡，重建這個 backend 物件放不掉它，要明確清。
+        try:
+            from mlx_whisper.transcribe import ModelHolder
+        except ImportError:
+            return
+        if ModelHolder.model is not None:
+            log(f"[whisper] unload {ModelHolder.model_path}")
+        ModelHolder.model = None
+        ModelHolder.model_path = None
+        self._key = None
 
     def transcribe(self, audio_path: str, model_name: str, lang: str | None) -> str:
         repo = self.load(model_name)
@@ -178,7 +243,10 @@ class WhisperBackend(Backend):
         kwargs = {"path_or_hf_repo": repo}
         if lang:
             kwargs["language"] = lang
-        result = mlx_whisper.transcribe(audio_path, **kwargs)
+        try:
+            result = mlx_whisper.transcribe(audio_path, **kwargs)
+        finally:
+            mlx_clear_cache()  # v1.11.1: 轉錄用過的緩衝立刻還給系統，不留在快取
         return (result.get("text") if isinstance(result, dict) else str(result)) or ""
 
 
@@ -244,6 +312,7 @@ class GemmaAudioBackend(Backend):
             audio=[audio_path], max_tokens=500,
             temperature=0.0,  # 轉錄任務 deterministic
         )
+        mlx_clear_cache()  # v1.11.1: 同 whisper，生成用過的緩衝不留在快取
         # mlx-vlm v0.1+ 回 GenerationResult dataclass 或 str
         text = getattr(result, "text", None) or str(result)
         # strip prompt echo / 角色標記
@@ -343,6 +412,7 @@ class BackendCache:
         self._current: Backend | None = None
         self._current_model: str | None = None
         self._loaded_at: float | None = None
+        self._last_used: float | None = None  # v1.11.1: 閒置卸載用
 
     def _kind(self, model_name: str) -> str:
         if is_gemma_model(model_name):
@@ -361,13 +431,46 @@ class BackendCache:
             # 釋放除目標外的所有 backend 權重（重建工廠即丟棄舊模型，讓 GC/MLX 回收）
             for kind, fac in self._FACTORIES.items():
                 if self._backends[kind] is not backend:
+                    self._backends[kind].unload()  # v1.11.1: whisper 的權重在 mlx_whisper 內，重建物件放不掉
                     self._backends[kind] = fac()
+            mlx_clear_cache()
             backend = self._pick(model_name)
         repo = backend.load(model_name)
         self._current = backend
         self._current_model = model_name
         self._loaded_at = time.time()
+        self._last_used = time.time()
         return repo
+
+    def _unload_impl(self, reason: str) -> None:
+        """v1.11.1: 放掉所有 backend 的權重與 MLX 快取（在 MLX worker thread 內執行）."""
+        if self._current is None:
+            return
+        log(f"unload ({reason}): {self._current.name}/{self._current_model}; free all backends")
+        for kind, fac in self._FACTORIES.items():
+            try:
+                self._backends[kind].unload()
+            except Exception as exc:
+                log(f"unload {kind} failed: {exc!r}")
+            self._backends[kind] = fac()
+        self._current = None
+        self._current_model = None
+        self._loaded_at = None
+        import gc
+        gc.collect()
+        mlx_clear_cache()
+        log(f"unload done: {mlx_memory_mb()}")
+
+    def unload_if_idle(self, idle_sec: int) -> bool:
+        """v1.11.1: 超過 idle_sec 沒轉錄就卸載；回傳有沒有真的卸載。由 main 的看門執行緒每分鐘呼叫."""
+        with self._lock:
+            if self._current is None or self._last_used is None:
+                return False
+            idle = time.time() - self._last_used
+            if idle < idle_sec:
+                return False
+            MLX_WORKER.submit(self._unload_impl, f"idle {idle:.0f}s >= {idle_sec}s").result()
+            return True
 
     def load(self, model_name: str) -> str:
         # 路由到 MLX worker thread（避免 stream-thread mismatch）
@@ -379,7 +482,10 @@ class BackendCache:
         if self._current is not backend or self._current_model != model_name:
             self._load_impl(model_name)
             backend = self._pick(model_name)
-        return backend.transcribe(audio_path, model_name, lang)
+        try:
+            return backend.transcribe(audio_path, model_name, lang)
+        finally:
+            self._last_used = time.time()
 
     def transcribe(self, audio_path: str, model_name: str, lang: str | None) -> str:
         with self._lock:
@@ -469,6 +575,7 @@ def make_handler(token: str, cache: ModelCache, started_at: float):
             if route == "/health":
                 info = cache.info()
                 info.update({"ok": True, "uptime_s": time.time() - started_at, "version": DAEMON_VERSION})
+                info.update(mlx_memory_mb())  # v1.11.1: 讓 /health 直接看得到 MLX 占用
                 return self._json(200, info)
             if route == "/models":
                 return self._json(200, {"models": SUPPORTED_MODELS, "quants": SUPPORTED_QUANTS})
@@ -563,8 +670,21 @@ def main() -> int:
     token = ensure_token()
     port = args.port if args.port is not None else pick_port()
 
+    mlx_set_cache_limit(MLX_CACHE_LIMIT_MB)  # v1.11.1
     cache = ModelCache()
     started_at = time.time()
+
+    # v1.11.1: 閒置卸載看門執行緒（每分鐘檢查一次；LWM_IDLE_UNLOAD_SEC=0 關閉）
+    if IDLE_UNLOAD_SEC > 0:
+        def idle_watch() -> None:
+            while True:
+                time.sleep(60)
+                try:
+                    cache.unload_if_idle(IDLE_UNLOAD_SEC)
+                except Exception as exc:
+                    log(f"idle-unload error: {exc!r}")
+        threading.Thread(target=idle_watch, name="idle-unload", daemon=True).start()
+        log(f"idle-unload watch on: {IDLE_UNLOAD_SEC}s")
 
     if args.preload:
         try:
@@ -582,7 +702,10 @@ def main() -> int:
 
     def shutdown(*_):
         log("shutdown signal received")
-        server.shutdown()
+        # v1.11.1: 訊號處理器跑在 serve_forever() 所在的主執行緒，直接呼叫 server.shutdown()
+        # 會等自己結束而卡死（實測 lwm_daemon_ctl.sh stop 每次都等到 TERM timeout 才 KILL）。
+        # 改丟到另一條執行緒去呼叫，serve_forever() 才能正常返回。
+        threading.Thread(target=server.shutdown, name="shutdown", daemon=True).start()
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
