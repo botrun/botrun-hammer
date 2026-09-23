@@ -230,6 +230,10 @@ class Backend:
         """v1.11.1: 釋放這個 backend 持有的權重；預設什麼都不做（重建工廠即丟棄）."""
         return None
 
+    def _resolve_repo(self, model_name: str) -> str:
+        """模型名稱 → repo 路徑；不認得就丟 TranscribeError(400)，不能有副作用."""
+        raise NotImplementedError
+
 
 class WhisperBackend(Backend):
     """v1.7.9 既有 mlx-whisper 路徑."""
@@ -486,6 +490,9 @@ class BackendCache:
 
     def _load_impl(self, model_name: str) -> str:
         backend = self._pick(model_name)
+        # 先驗名稱：不認得的模型（400）要在改任何狀態之前就丟出去，舊模型維持載入、閒置卸載照常。
+        # 否則下面的 except 會把 _current 清成 None，權重卻還在 ModelHolder 裡，unload_if_idle 就跳過它。
+        backend._resolve_repo(model_name)
         if self._current is not None and self._current is not backend:
             log(f"backend switch: {self._current.name} -> {backend.name}; free others")
             # v1.11.1: 先放掉對舊 backend 的參照，再釋放其他 backend 的權重、回收、清快取，
@@ -503,9 +510,19 @@ class BackendCache:
         try:
             repo = backend.load(model_name)
         except Exception:
-            # 載入失敗就不要留著舊的 _current／_current_model，否則 /health 會顯示一個其實沒載入的模型
+            # 載入失敗（下載失敗、repo 不存在）：不留舊的 _current／_current_model，
+            # 而且要確保「_current 是 None」時真的什麼都沒載入——把所有 backend 都放掉，
+            # 否則 unload_if_idle 看到 None 就跳過，殘留的權重會卡在記憶體裡。
             self._current = None
             self._current_model = None
+            for kind, fac in self._FACTORIES.items():
+                try:
+                    self._backends[kind].unload()
+                except Exception as exc:
+                    log(f"unload {kind} after failed load: {exc!r}")
+                self._backends[kind] = fac()
+            import gc
+            gc.collect()
             mlx_clear_cache()
             raise
         mlx_clear_cache()  # 載入過程的暫存緩衝不留在快取

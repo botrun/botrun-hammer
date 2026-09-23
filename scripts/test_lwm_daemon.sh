@@ -179,6 +179,18 @@ resp=$(curl -s -X POST --data-binary "@$WAV" \
 echo "$resp" | grep -q '"text"' || { echo "FAIL: $resp"; exit 1; }
 echo "PASS"
 
+echo "--- C.5 不認得的模型名稱回 400，且舊模型仍會閒置卸載（審查第 3 輪的回歸）---"
+code=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Authorization: Bearer $TOKEN" "$BASE/switch_model?model=bogus-model")
+[[ "$code" == "400" ]] || { echo "FAIL: expect 400, got $code"; exit 1; }
+unloaded_check='import sys, json; d = json.loads(sys.argv[1]); sys.exit(0 if (not d.get("model_loaded")) and d.get("mlx_active_mb", 0) < 50 else 1)'
+for _ in $(seq 1 100); do
+  resp=$(curl -s -H "Authorization: Bearer $TOKEN" "$BASE/health")
+  "$PYTHON_BIN" -c "$unloaded_check" "$resp" && break
+  sleep 0.2
+done
+"$PYTHON_BIN" -c "$unloaded_check" "$resp" || { echo "FAIL: 400 之後閒置卸載沒有發生（權重卡在記憶體）: $resp"; exit 1; }
+echo "PASS  ($resp)"
+
 stage_c_common
 echo
 echo "=== ALL STAGES PASSED ==="
