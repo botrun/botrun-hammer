@@ -131,16 +131,40 @@ def log(msg: str) -> None:
 # 預設等於 memory limit（裝置建議工作集的 1.5 倍），等於沒有上限；每次轉錄配的緩衝
 # 用完進快取、從不還給 macOS。加上 WhisperBackend 之前自己多載了一份權重（從未用到）。
 # 修法三件：啟動時設快取上限、每次轉錄後 clear_cache、閒置一段時間卸載模型。
-MLX_CACHE_LIMIT_MB = int(os.environ.get("LWM_MLX_CACHE_LIMIT_MB", "1024"))
-IDLE_UNLOAD_SEC = int(os.environ.get("LWM_IDLE_UNLOAD_SEC", "1800"))
+def _env_int(name: str, default: int, minimum: int = 0) -> int:
+    """讀整數環境變數；不是整數或小於下限就記 log 並退回預設值，絕不讓 daemon 起不來."""
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        val = int(raw)
+    except ValueError:
+        log(f"[env] {name}={raw!r} 不是整數，改用預設 {default}")
+        return default
+    if val < minimum:
+        log(f"[env] {name}={val} 小於下限 {minimum}，改用預設 {default}")
+        return default
+    return val
+
+
+MLX_CACHE_LIMIT_MB = _env_int("LWM_MLX_CACHE_LIMIT_MB", 1024, minimum=0)
+IDLE_UNLOAD_SEC = _env_int("LWM_IDLE_UNLOAD_SEC", 1800, minimum=0)
+IDLE_CHECK_SEC = _env_int("LWM_IDLE_CHECK_SEC", 60, minimum=1)
+
+_MX_FAILED = False
 
 
 def _mx():
-    """懶載入 mlx.core；沒裝 MLX 的環境回 None，不阻擋其他 backend."""
+    """懶載入 mlx.core；沒裝 MLX、或 Metal 初始化失敗的環境回 None，不阻擋其他 backend（breeze）."""
+    global _MX_FAILED
+    if _MX_FAILED:
+        return None
     try:
         import mlx.core as mx
         return mx
-    except ImportError:
+    except Exception as exc:  # 不只 ImportError：Metal 初始化失敗也不能讓 daemon 起不來
+        _MX_FAILED = True
+        log(f"[mlx] 不可用，MLX 相關功能略過：{exc!r}")
         return None
 
 
@@ -148,26 +172,37 @@ def mlx_set_cache_limit(limit_mb: int) -> None:
     mx = _mx()
     if mx is None:
         return
-    prev = mx.set_cache_limit(limit_mb * 1024 * 1024)
-    log(f"[mlx] cache limit {prev / 2**30:.1f} GB -> {limit_mb} MB")
+    try:
+        prev = mx.set_cache_limit(limit_mb * 1024 * 1024)
+        log(f"[mlx] cache limit {prev / 2**30:.1f} GB -> {limit_mb} MB")
+    except Exception as exc:
+        log(f"[mlx] set_cache_limit 失敗，維持預設：{exc!r}")
 
 
 def mlx_clear_cache() -> None:
     mx = _mx()
-    if mx is not None:
+    if mx is None:
+        return
+    try:
         mx.clear_cache()
+    except Exception as exc:
+        log(f"[mlx] clear_cache 失敗：{exc!r}")
 
 
 def mlx_memory_mb() -> dict:
-    """給 /health 看的 MLX 記憶體數字（MB），方便量測與回報。"""
+    """給 /health 看的 MLX 記憶體數字（MB），方便量測與回報。失敗回空 dict，/health 照常 200."""
     mx = _mx()
     if mx is None:
         return {}
-    return {
-        "mlx_active_mb": round(mx.get_active_memory() / 2**20, 1),
-        "mlx_cache_mb": round(mx.get_cache_memory() / 2**20, 1),
-        "mlx_peak_mb": round(mx.get_peak_memory() / 2**20, 1),
-    }
+    try:
+        return {
+            "mlx_active_mb": round(mx.get_active_memory() / 2**20, 1),
+            "mlx_cache_mb": round(mx.get_cache_memory() / 2**20, 1),
+            "mlx_peak_mb": round(mx.get_peak_memory() / 2**20, 1),
+        }
+    except Exception as exc:
+        log(f"[mlx] 讀記憶體數字失敗：{exc!r}")
+        return {}
 
 
 class TranscribeError(Exception):
@@ -210,6 +245,10 @@ class WhisperBackend(Backend):
     def load(self, model_name: str) -> str:
         repo = self._resolve_repo(model_name)
         if self._key != model_name:
+            if self._key is not None:
+                # 同一個 backend 換模型：先放掉舊的再載新的，避免兩份權重同時在記憶體裡。
+                self.unload()
+                mlx_clear_cache()
             # v1.11.1: 不再自己 load_model 一份。mlx_whisper.transcribe() 內部的 ModelHolder
             # 會依 repo 載入並持有，之前這裡多載的那份從未被用到，白占一份權重。
             # 預載／切換模型時直接暖 ModelHolder（與 transcribe() 預設的 fp16 相同，同一份）。
@@ -220,7 +259,9 @@ class WhisperBackend(Backend):
                 import mlx.core as mx
                 ModelHolder.get_model(repo, mx.float16)
                 log(f"[whisper] loaded in {time.time() - t0:.2f}s")
-            except Exception as exc:
+            except (ImportError, AttributeError) as exc:
+                # 只有「mlx_whisper 版本不同、沒有 ModelHolder」才降級成延後載入；
+                # 離線、repo 打錯這類真正的載入失敗要往上拋，否則 /switch_model 會假裝成功。
                 log(f"[whisper] warm load skipped ({exc!r}); 第一次轉錄時再載入")
             self._key = model_name
         return repo
@@ -307,12 +348,14 @@ class GemmaAudioBackend(Backend):
         prompt = apply_chat_template(
             self._processor, self._model.config, instruction, num_audios=1,
         )
-        result = vlm_generate(
-            model=self._model, processor=self._processor, prompt=prompt,
-            audio=[audio_path], max_tokens=500,
-            temperature=0.0,  # 轉錄任務 deterministic
-        )
-        mlx_clear_cache()  # v1.11.1: 同 whisper，生成用過的緩衝不留在快取
+        try:
+            result = vlm_generate(
+                model=self._model, processor=self._processor, prompt=prompt,
+                audio=[audio_path], max_tokens=500,
+                temperature=0.0,  # 轉錄任務 deterministic
+            )
+        finally:
+            mlx_clear_cache()  # v1.11.1: 同 whisper，生成用過的緩衝不留在快取，失敗也要清
         # mlx-vlm v0.1+ 回 GenerationResult dataclass 或 str
         text = getattr(result, "text", None) or str(result)
         # strip prompt echo / 角色標記
@@ -336,6 +379,18 @@ class BreezeBackend(Backend):
     def __init__(self) -> None:
         self._pipe = None
         self._key: str | None = None
+
+    def unload(self) -> None:
+        # v1.11.1: 丟掉 pipeline 參照；torch 已載入時順手把 MPS 快取還給 macOS（未實測，保守包 try）。
+        self._pipe = None
+        self._key = None
+        if "torch" in sys.modules:
+            try:
+                import torch
+                if torch.backends.mps.is_available():
+                    torch.mps.empty_cache()
+            except Exception as exc:
+                log(f"[breeze] mps empty_cache 略過：{exc!r}")
 
     def _resolve_repo(self, model_name: str) -> str:
         if "/" in model_name:
@@ -428,14 +483,20 @@ class BackendCache:
         backend = self._pick(model_name)
         if self._current is not None and self._current is not backend:
             log(f"backend switch: {self._current.name} -> {backend.name}; free others")
-            # 釋放除目標外的所有 backend 權重（重建工廠即丟棄舊模型，讓 GC/MLX 回收）
+            # v1.11.1: 先放掉對舊 backend 的參照，再釋放其他 backend 的權重、回收、清快取，
+            # 讓舊模型在新模型載入「之前」就離開記憶體，避免兩份權重同時在記憶體裡的尖峰。
+            self._current = None
+            self._current_model = None
             for kind, fac in self._FACTORIES.items():
                 if self._backends[kind] is not backend:
-                    self._backends[kind].unload()  # v1.11.1: whisper 的權重在 mlx_whisper 內，重建物件放不掉
+                    self._backends[kind].unload()  # whisper 的權重在 mlx_whisper 內，重建物件放不掉
                     self._backends[kind] = fac()
+            import gc
+            gc.collect()
             mlx_clear_cache()
             backend = self._pick(model_name)
         repo = backend.load(model_name)
+        mlx_clear_cache()  # 載入過程的暫存緩衝不留在快取
         self._current = backend
         self._current_model = model_name
         self._loaded_at = time.time()
@@ -674,17 +735,17 @@ def main() -> int:
     cache = ModelCache()
     started_at = time.time()
 
-    # v1.11.1: 閒置卸載看門執行緒（每分鐘檢查一次；LWM_IDLE_UNLOAD_SEC=0 關閉）
+    # v1.11.1: 閒置卸載看門執行緒（每 LWM_IDLE_CHECK_SEC 秒檢查一次，預設 60；LWM_IDLE_UNLOAD_SEC=0 關閉）
     if IDLE_UNLOAD_SEC > 0:
         def idle_watch() -> None:
             while True:
-                time.sleep(60)
+                time.sleep(IDLE_CHECK_SEC)
                 try:
                     cache.unload_if_idle(IDLE_UNLOAD_SEC)
                 except Exception as exc:
                     log(f"idle-unload error: {exc!r}")
         threading.Thread(target=idle_watch, name="idle-unload", daemon=True).start()
-        log(f"idle-unload watch on: {IDLE_UNLOAD_SEC}s")
+        log(f"idle-unload watch on: unload after {IDLE_UNLOAD_SEC}s idle, check every {IDLE_CHECK_SEC}s")
 
     if args.preload:
         try:
