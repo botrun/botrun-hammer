@@ -1,5 +1,5 @@
 --[[
-  🔨 波特槌 v1.14.0 - Mac 語音轉文字
+  🔨 波特槌 v1.14.1 - Mac 語音轉文字
 
   由 Vertex AI Gemini（gcloud ADC 認證）驅動的語音輸入助手
 
@@ -29,7 +29,7 @@
 ]]--
 
 -- 版本號（所有版本顯示共用此常數）
-local VERSION = "1.14.0"
+local VERSION = "1.14.1"
 
 -- 開機自動啟動 Hammerspoon（v1.7.11）
 pcall(function() hs.autoLaunch(true) end)
@@ -1748,7 +1748,7 @@ end
 --   （不認得新模型）→ 選了就 400。故新增版本比對 + 重新抓 + 重啟 daemon。
 local LWM_RAW_BASE = "https://raw.githubusercontent.com/botrun/botrun-hammer/main/scripts"
 -- 這份 lua 期望的 daemon 版本；每次改 lwm_daemon.py 的 DAEMON_VERSION 就同步這裡
-local LWM_DAEMON_REQUIRED_VERSION = "1.11.0"
+local LWM_DAEMON_REQUIRED_VERSION = "1.11.1"  -- v1.14.1: daemon 記憶體修補（MLX 快取上限＋閒置卸載）
 local LWM_REQUIRED_FILES = {
   { name = "lwm_daemon.py",      mode = "0755", versioned = true },
   { name = "lwm_daemon_ctl.sh",  mode = "0755" },

@@ -1,6 +1,6 @@
 ## 波特槌版本規則
 
-**當前版本: 1.14.0**
+**當前版本: 1.14.1**（daemon `DAEMON_VERSION` 1.11.1；改 daemon 版本時 lua 的 `LWM_DAEMON_REQUIRED_VERSION` 必須同步，見 v1.14.1 地雷）
 
 ### 🔑 GCP 專案與認證（永久規則，v1.10.1 起；v1.10.2 加開 @cameo.tw 全網域）
 - **本案專屬 GCP 專案＝`botrun-hammer`**（<https://console.cloud.google.com/welcome?project=botrun-hammer>），所有 Vertex AI 呼叫一律走這顆；程式預設值與 `.env` 的 `VERTEX_PROJECT` 皆為 `botrun-hammer`。
@@ -27,6 +27,7 @@
 - 主版本 (major)：重大變更、不相容
 
 ### 地雷經驗文件索引
+- [⭐⭐⭐ v1.14.1 lwm daemon 閒置占 20 GB 不還（MLX 快取上限＋清快取＋閒置卸載）](docs/2026-09-24_v1.14.1-lwm-daemon-memory-fix.md) — daemon 跑 28 天閒置 footprint 20.44 GB、Python malloc 只 83 MB，其餘全是 MLX 緩衝快取：MLX `set_cache_limit` 預設＝memory limit（本機實測 30.4 GB）等於沒上限、`WhisperBackend` 自己 `load_model` 一份從沒用到（`mlx_whisper.transcribe` 內部 `ModelHolder` 才是真的那份）、載了永不卸載；修法 `set_cache_limit(1 GB)`＋每次轉錄後 `clear_cache()`＋只暖 `ModelHolder`＋閒置 1800 秒卸載（`LWM_IDLE_UNLOAD_SEC`／`LWM_IDLE_CHECK_SEC`）＋環境變數亂填退回預設，同批音檔 8 次轉錄 11 GB → 3.1 GB、閒置後 187 MB；順手修 `shutdown()` 在 serve_forever 執行緒內互等卡死（ctl stop 從等 KILL 變 1 秒內）。**發布地雷：改 `DAEMON_VERSION` 必須同步 lua 的 `LWM_DAEMON_REQUIRED_VERSION` 並升 lua `VERSION`**，否則同事永遠拿不到修補、作者本機會無限重抓重啟（審查員 subagent 第 1 輪抓到）。驗收 `scripts/test_lwm_daemon.sh` 新增 Stage C（MLX 欄位、閒置卸載＋重載、SIGTERM 2 秒內結束、環境變數亂填仍能啟動）
 - [⭐⭐⭐ v1.14.0 選單清除待補轉（Clear Pending Retranscriptions）](docs/2026-09-20_v1.14.0-清除補轉錄選單-DAG.md) — 補轉機制使失敗音檔受 FIFO 保護永遠留在歷史中，使用者不需要這些補轉時造成 menu 與彈窗困擾；修法：狀態標記 `cleared`（自然退出 pending 且允許 FIFO 正常自然淘汰）、音檔「絕不擅自刪除」（保留在硬碟，右鍵仍可重轉）、選單自適應（1 筆直出按鈕，多筆子選單提供全部清除與逐筆清除）、零狀態全隱藏不打擾。
 - [v1.13.0 Vertex 模型可用 .env 的 VERTEX_MODEL 覆寫](hammerspoon/botrun-hammer.lua) — 讓個人專案可免改 code 實測新模型。
 - [⭐⭐⭐ v1.12.0 補轉未完成錄音（Re-transcribe）8 條地雷](docs/2026-08-12_211413_v1.12.0-補轉未完成錄音-地雷傳承.md) — **錯誤訊息裡每一句「按 X 可以 Y」都是規格**：v1.11.4 彈窗寫「登入後可從 F6 重轉」但那功能從不存在，使用者照做只得到 Finder 視窗（broken promise 比不說更傷）；**事後補救不可沿用當下的輸出方式**——補轉一律只進剪貼簿不自動貼上（游標可能在 Terminal 被當指令執行），並用「pasteText 會還原剪貼簿」的副作用當哨兵做動態驗證；**非同步回呼會遺失（7 次批次 2 次），批次必須有監督者**，否則 running 卡 true 讓整個功能按不動（局部故障升級成全域故障），配套 token 版號＋timer 強引用＋失聯狀態退回；另含 `hs -c` 非同步 print 不回終端機（害我誤判 3 次）、殘留狀態讓重跑靜默不執行、**bash 變數後接全形字元變 unbound variable**（`${VAR}` 一律加括號）、`hs -c` 首次載入 extension 污染 stdout、FIFO 淘汰必須保護待處理項否則音檔變孤兒。驗收 `scripts/test_retranscribe.sh` S1–S8 全過，真實救回本機 3 筆躺著沒轉的錄音（[DAG](docs/2026-08-12_203824_v1.12.0-補轉未完成錄音-DAG.md)）
